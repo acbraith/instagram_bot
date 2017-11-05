@@ -4,8 +4,8 @@ Automatically likes posts in a given list of tags and follows users, maintaining
 
 Settings can be changed in the code, planned to make more accessible from command line / saved settings in files later.
 
-A /<username> directory should be made in the same directory as instabot.py. This should contain the files
+A /\<username\> directory should be made in the same directory as instabot.py. This should contain the files
 * pass.txt: single line, password
 * tags.txt: one tag per line (no #)
 
-Usage: python3 instabot.py <USERNAME>
+Usage: python3 instabot.py \<USERNAME\>
