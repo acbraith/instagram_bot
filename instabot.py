@@ -1,4 +1,4 @@
-from InstagramAPI import InstagramAPI
+from InstagramAPI.InstagramAPI import InstagramAPI
 from persistqueue import SQLiteQueue
 from sklearn.linear_model import LogisticRegression
 from time import sleep
