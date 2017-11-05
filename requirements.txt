@@ -1,0 +1,4 @@
+persist_queue==0.3.3
+numpy==1.12.1
+requests==2.9.1
+scikit_learn==0.19.1
