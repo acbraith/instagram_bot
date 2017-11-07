@@ -2,8 +2,9 @@ from InstagramAPI.InstagramAPI import InstagramAPI
 from persistqueue import SQLiteQueue
 from sklearn.linear_model import LogisticRegression
 from time import sleep
-import random, pprint, requests, json, datetime, sys
+import random, pprint, requests, json, datetime, sys, pickle
 import numpy as np
+import pandas as pd
 
 # persistent dict
 from collections import MutableMapping
@@ -121,11 +122,10 @@ class SlidingWindow:
 class InstaBot:
 	def __init__(self, username, password,
 		tag_list, 
-		max_hour_likes=30, max_hour_follows=15,
+		max_hour_likes=40, max_hour_follows=20,
 		likes_per_user=3,
-		mean_wait_time=5,
-		max_followed=50,
-		max_photo_likes=100, min_photo_likes=0):
+		mean_wait_time=1,
+		max_followed=100):
 		self.username = username
 		self.password = password
 		self.tag_list = tag_list
@@ -134,18 +134,25 @@ class InstaBot:
 		self.likes_per_user = likes_per_user
 		self.mean_wait_time = mean_wait_time
 		self.max_followed = max_followed
-		self.max_photo_likes = max_photo_likes
-		self.min_photo_likes = min_photo_likes
 
 		self.followed_queue = SQLiteQueue(username+'/followed_users')
 		self.hour_likes = SlidingWindow(1, username+'/hour_likes')
 		self.hour_follows = SlidingWindow(1, username+'/hour_follows')
 		self.hour_unfollows = SlidingWindow(1, username+'/hour_unfollows')
 
-		self.target_data = PersistentDict(username+'/target_data')
+		self.target_data_path = username+'/target_data/data.csv'
+		if not os.path.exists(username+'/target_data'):
+			os.makedirs(username+'/target_data')
+		try: 
+			self.target_data = pickle.load(open(self.target_data_path,'rb'))
+		except Exception as e:
+			self.target_data = pd.DataFrame(
+				columns=['user_id','timestamp','followers','followings','follow_back','tag','likes'])
 
 		self.api = InstagramAPI(username, password)
 		self.send_request(self.api.login)
+
+		self.train_data = None
 
 	def wait(self):
 		t = np.random.exponential(self.mean_wait_time)
@@ -164,11 +171,11 @@ class InstaBot:
 		if not(success):
 			status_code = self.api.LastResponse.status_code
 			print("HTTP", status_code)
-			print(self.api.LastJson)
+			print(self.api.LastResponse)
 			if status_code in [400, 429]:
 				print("HTTP", status_code)
-				print("Sleep 6 hours")
-				sleep(6*60*60)
+				print("Sleep 1 hour")
+				sleep(60*60)
 				return None
 			else:
 				self.wait()
@@ -199,33 +206,56 @@ class InstaBot:
 			'is_private': False, 'status': 'ok'}
 		return ret
 
-	def get_model_data(self):
-		X = np.zeros((0,3))
-		Y = np.zeros((0,))
-		for target, data in self.target_data.items():
-			if len(data) < 5 and \
-				datetime.datetime.now() - data[0] > datetime.timedelta(days=1):
-				y = 1 if get_friendship_info(target)['followed_by'] else 0
-				data = (data)+(y,)
-				self.target_data[target] = data
+	def save_target_data(self):
+		pickle.dump(self.target_data, open(self.target_data_path,'wb'), protocol=2)
 
-			if len(data) == 5:
-				x = data[1:-1]
-				y = data[-1]
-				X = np.append(X, np.array(x).reshape(1,-1), axis=0)
-				Y = np.append(Y, np.array(y).reshape(1,), axis=0)
-		return X,Y
+	def update_target_data(self, row):
+		if row[list(self.target_data.columns).index('user_id')] in self.target_data['user_id']:
+			self.target_data.loc[self.target_data['user_id']==user_id,:] = row
+		else:
+			row = pd.Series(row, index=self.target_data.columns)
+			self.target_data = self.target_data.append(row, ignore_index=True)
+		self.save_target_data()
+
+	def update_follow_backs(self):
+		to_update = self.target_data.loc[
+			(datetime.datetime.now()-self.target_data['timestamp'] > datetime.timedelta(days=1)) &
+			~(pd.isnull(self.target_data['follow_back']))]
+
+		for index, row in to_update.iterrows(): 
+			user_id = row['user_id']
+			follow_back = self.get_friendship_info(target)['followed_by']
+			self.target_data.loc[index, 'follow_back'] = follow_back
+		if len(to_update) > 0:
+			self.save_target_data()
+
+	def get_model_data(self):
+		useful_data = self.target_data.loc[
+			~pd.isnull(self.target_data['follow_back']),
+			['followers','followings','likes','follow_back']]
+		X = useful_data[['followers','followings','likes']].as_matrix()
+		y = useful_data['follow_back'].as_matrix().astype(int)
+		return X,y
 
 	def get_model(self):
 		X,y = self.get_model_data()
 		if len(np.unique(y)) > 1:
-			return LogisticRegression().fit(X,y)
+			model = LogisticRegression().fit(X,y)
+			model._train_data = (X,y)
+			return model
 		else:
 			return None
 
-	def is_user_target(self, item):
+	def get_mean_predicted_follow_back_rate(self, model):
+		if model is None:
+			return 0
+		X,y = model._train_data
+		y_pred = model.predict_proba(X)[:,list(model.classes_).index(1)]
+		return np.mean(y_pred)
+
+	def is_user_target(self, item, tag):
 		'''
-		Reinforcement learning based decision
+		Reinforcement learning inspired decision
 		inputs:
 			user followers, followings
 			photo likes
@@ -257,17 +287,21 @@ class InstaBot:
 			X = np.array([user_followers, user_followings, media_likes]).reshape(1,-1)
 
 			model = self.get_model()
+			follow_back_rate = self.get_mean_predicted_follow_back_rate(model)
 
-			alpha = 0.5
+			# target users more likely than average to follow back
+			alpha = follow_back_rate
 			epsilon = 0.1
 			p = 1 if model is None else model.predict_proba(X)[0,list(model.classes_).index(1)]
 			print("Target Data",X)
-			print("Followback Probability",p)
+			print("Predicted Followback Probability",p)
+			print("Average Predicted Followback Rate",follow_back_rate)
 
 			if p > alpha or random.random() < epsilon: 
-				self.target_data[user_id] = (
-					datetime.datetime.now(), 
-					user_followers, user_followings, media_likes)
+				row = (user_id, datetime.datetime.now(), 
+					user_followers, user_followings, np.nan,
+					tag, media_likes)
+				self.update_target_data(row)
 				return True
 
 		return False
@@ -317,6 +351,7 @@ class InstaBot:
 		while True:
 
 			self.unfollow_users()
+			self.update_follow_backs()
 
 			tag = random.choice(tag_list)
 			items = self.get_tag_feed(tag)
@@ -328,7 +363,7 @@ class InstaBot:
 					if i>0: break
 
 					user_id = item['user']['pk']
-					if self.is_user_target(item):
+					if self.is_user_target(item, tag):
 						self.target_user(user_id)
 
 # usage: python3 instabot.py <USERNAME>
