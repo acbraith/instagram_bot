@@ -2,96 +2,9 @@ from InstagramAPI.InstagramAPI import InstagramAPI
 from persistqueue import SQLiteQueue
 from sklearn.linear_model import LogisticRegression
 from time import sleep
-import random, pprint, requests, json, datetime, sys, pickle
+import random, pprint, requests, json, datetime, sys, pickle, os
 import numpy as np
 import pandas as pd
-
-# persistent dict
-from collections import MutableMapping
-import sqlite3, pickle, os
-class PersistentDict(MutableMapping):
-    '''
-    From
-    https://stackoverflow.com/questions/9320463/persistent-memoization-in-python
-    '''
-    def __init__(self, dbpath, iterable=None, **kwargs):
-        self.dbpath = dbpath+'/dict'
-        if not os.path.exists(dbpath):
-            os.makedirs(dbpath)
-        with self.get_connection() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                'create table if not exists memo '
-                '(key blob primary key not null, value blob not null)'
-            )
-        if iterable is not None:
-            self.update(iterable)
-        self.update(kwargs)
-
-    def encode(self, obj):
-        return pickle.dumps(obj)
-
-    def decode(self, blob):
-        return pickle.loads(blob)
-
-    def get_connection(self):
-        return sqlite3.connect(self.dbpath, timeout=300)
-
-    def  __getitem__(self, key):
-        key = self.encode(key)
-        with self.get_connection() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                'select value from memo where key=?',
-                (key,)
-            )
-            value = cursor.fetchone()
-        if value is None:
-            raise KeyError(key)
-        return self.decode(value[0])
-
-    def __setitem__(self, key, value):
-        key = self.encode(key)
-        value = self.encode(value)
-        with self.get_connection() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                'insert or replace into memo values (?, ?)',
-                (key, value)
-            )
-
-    def __delitem__(self, key):
-        key = self.encode(key)
-        with self.get_connection() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                'select count(*) from memo where key=?',
-                (key,)
-            )
-            if cursor.fetchone()[0] == 0:
-                raise KeyError(key)
-            cursor.execute(
-                'delete from memo where key=?',
-                (key,)
-            )
-
-    def __iter__(self):
-        with self.get_connection() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                'select key from memo'
-            )
-            records = cursor.fetchall()
-        for r in records:
-            yield self.decode(r[0])
-
-    def __len__(self):
-        with self.get_connection() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                'select count(*) from memo'
-            )
-            return cursor.fetchone()[0]
 
 class Item:
 	def __init__(self, value):
@@ -140,7 +53,7 @@ class InstaBot:
 		self.hour_follows = SlidingWindow(1, username+'/hour_follows')
 		self.hour_unfollows = SlidingWindow(1, username+'/hour_unfollows')
 
-		self.target_data_path = username+'/target_data/data.csv'
+		self.target_data_path = username+'/target_data/data.pkl'
 		if not os.path.exists(username+'/target_data'):
 			os.makedirs(username+'/target_data')
 		try: 
@@ -172,6 +85,7 @@ class InstaBot:
 			status_code = self.api.LastResponse.status_code
 			print("HTTP", status_code)
 			print(self.api.LastResponse)
+			print(self.api.LastResponse.text)
 			if status_code in [400, 429]:
 				print("HTTP", status_code)
 				print("Sleep 1 hour")
