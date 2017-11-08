@@ -269,7 +269,7 @@ class InstaBot:
 			self.unfollow_users()
 			self.update_follow_backs()
 
-			tag = random.choice(tag_list)
+			tag = random.choice(self.tag_list)
 			items = self.get_tag_feed(tag)
 			if items is None:
 				print("Tag Feed 404")
