@@ -2,7 +2,7 @@ from InstagramAPI.InstagramAPI import InstagramAPI
 from persistqueue import SQLiteQueue
 from sklearn.linear_model import LogisticRegression
 from time import sleep
-import random, pprint, requests, json, datetime, sys, pickle, os
+import random, pprint, requests, datetime, sys, pickle, os, yaml
 import numpy as np
 import pandas as pd
 
@@ -11,10 +11,15 @@ class Item:
 		self.value = value
 		self.timestamp = datetime.datetime.now()
 class SlidingWindow:
-	def __init__(self, length, path):
+	def __init__(self, length, path, check_time = 1/30):
 		self.length = datetime.timedelta(hours=length)
+		self.check_time = datetime.timedelta(hours=check_time)
+		self.last_check = datetime.datetime.now()
 		self.items = SQLiteQueue(path)
 	def _clean(self):
+		# only clean every self.check_time
+		if datetime.datetime.now() - self.last_check < self.check_time:
+			return
 		# remove old items
 		items = []
 		while len(self.items) > 0:
@@ -33,12 +38,13 @@ class SlidingWindow:
 		raise Exception("Not Implemented")
 
 class InstaBot:
-	def __init__(self, username, password,
-		tag_list, 
-		max_hour_likes=40, max_hour_follows=20,
+	def __init__(self, username='', password='',
+		tag_list=['instagram'], 
+		max_hour_likes=1000, max_hour_follows=500,
 		likes_per_user=3,
 		mean_wait_time=1,
 		max_followed=100):
+
 		self.username = username
 		self.password = password
 		self.tag_list = tag_list
@@ -76,26 +82,22 @@ class InstaBot:
 		print(request.__name__, args, kwargs)
 		try:
 			success = request(*args, **kwargs)
+			self.wait()
+			if not(success):
+				status_code = self.api.LastResponse.status_code
+				print("HTTP", status_code)
+				print(self.api.LastResponse)
+				print(self.api.LastResponse.text)
+				if status_code in [400, 429]:
+					if self.api.LastJson['spam']:
+						print("Spam Detected, sleep 1 hour")
+						sleep(60*60)
+				return None
 		except Exception as e:
 			print(e)
-			print("Sleep 10 minutes")
-			sleep(600)
+			self.wait()
 			return None
-		if not(success):
-			status_code = self.api.LastResponse.status_code
-			print("HTTP", status_code)
-			print(self.api.LastResponse)
-			print(self.api.LastResponse.text)
-			if status_code in [400, 429]:
-				print("HTTP", status_code)
-				print("Sleep 1 hour")
-				sleep(60*60)
-				return None
-			else:
-				self.wait()
-				return None
 
-		self.wait()
 		return self.api.LastJson
 
 	def get_tag_feed(self, tag):
@@ -283,7 +285,9 @@ class InstaBot:
 # usage: python3 instabot.py <USERNAME>
 if __name__ == '__main__':
 	username = sys.argv[1]
-	password = open(username + '/pass.txt').readline().rstrip('\n')
-	tag_list = [line.rstrip('\n') for line in open(username + '/tags.txt').readlines()]
-	bot = InstaBot(username, password, tag_list)
+	try:
+		settings = yaml.load(open(username+'/settings.yml','r'))
+	except Exception as e:
+		settings = {}
+	bot = InstaBot(**settings)
 	bot.run()

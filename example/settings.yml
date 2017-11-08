@@ -1,0 +1,16 @@
+# max_hour_likes and max_hour_follows limit number of actions per hour (sliding window)
+# like likes_per_user media for each targetted user
+# wait on average mean_wait_time seconds between API queries
+# concurrently followed up to max_followed users
+# unfollow oldest followed users to maintain this number
+username:         example # should match directory file is in
+password:         password
+max_hour_likes:   100
+max_hour_follows: 50
+likes_per_user:   3
+mean_wait_time:   1
+max_followed:     100
+tag_list:
+  - hashtag
+  - taghash
+  - hathsah
