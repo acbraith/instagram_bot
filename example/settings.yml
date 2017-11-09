@@ -4,6 +4,7 @@
 # concurrently followed up to max_followed users
 # unfollow oldest followed users to maintain this number
 # will use n_jobs threads to like/follow, and 1 thread to unfollow/gather followback data
+# n_jobs > 1 will often result in errors and may get your account banned for spam (as will excessively high like/follow rates)
 # verbosity:
 #   0: nothing
 #   1: error messages, periodic likes/follows per hour
