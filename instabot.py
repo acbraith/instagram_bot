@@ -136,11 +136,11 @@ class InstaBot:
 	def update_follow_backs(self):
 		to_update = self.target_data.loc[
 			(datetime.datetime.now()-self.target_data['timestamp'] > datetime.timedelta(days=1)) &
-			~(pd.isnull(self.target_data['follow_back']))]
+			pd.isnull(self.target_data['follow_back'])]
 
 		for index, row in to_update.iterrows(): 
 			user_id = row['user_id']
-			follow_back = self.get_friendship_info(target)['followed_by']
+			follow_back = self.get_friendship_info(user_id)['followed_by']
 			self.target_data.loc[index, 'follow_back'] = follow_back
 		if len(to_update) > 0:
 			self.save_target_data()
@@ -167,7 +167,7 @@ class InstaBot:
 			return 0
 		X,y = model._train_data
 		y_pred = model.predict_proba(X)[:,list(model.classes_).index(1)]
-		return np.mean(y_pred)
+		return np.median(y_pred)
 
 	def is_user_target(self, item, tag):
 		'''
