@@ -63,55 +63,49 @@ class Item:
 	def __init__(self, value):
 		self.value = value
 		self.timestamp = datetime.datetime.now()
-class PersistentSlidingWindow:
-	def __init__(self, length, path, check_time = 1/30):
-		self.length = datetime.timedelta(hours=length)
-		self.check_time = datetime.timedelta(hours=check_time)
-		self.last_check = datetime.datetime.now()
-		self.items = SQLiteQueue(path)
-	def _clean(self):
-		# only clean every self.check_time
-		if datetime.datetime.now() - self.last_check < self.check_time:
-			return
-		# remove old items
-		items = []
-		while len(self.items) > 0:
-			items += [self.items.get()]
-		items = [i for i in items if (datetime.datetime.now()-i.timestamp) < self.length]
-		for i in items:
-			self.items.put(i)
-	def __len__(self):
-		self._clean()
-		l = len(self.items)
-		return l
-	def put(self, item):
-		self._clean()
-		self.items.put(Item(item))
-	def get(self):
-		self._clean()
-		raise Exception("Not Implemented")
 class SlidingWindow:
-	def __init__(self, length, check_time = 120):
+	def __init__(self, path, length = 3600, check_time = 120):
 		self.length = datetime.timedelta(seconds=length)
 		self.check_time = datetime.timedelta(seconds=check_time)
 		self.last_check = datetime.datetime.now()
-		self.items = []
 		self.lock = threading.Lock()
+		self.filepath = path+'/data.pkl'
+		if not os.path.exists(path):
+			os.makedirs(path)
+		try:
+			self._load()
+		except:
+			self.items = []
+			self._save()
+	def _save(self):
+		with open(self.filepath, 'wb') as f:
+			pickle.dump(self.items, f)
+	def _load(self):
+		with open(self.filepath, 'rb') as f:
+			self.items = pickle.load(f)
 	def _clean(self):
 		# only clean every self.check_time
 		if datetime.datetime.now() - self.last_check < self.check_time:
 			return
 		# remove old items
+		self.lock.acquire()
+		l = len(self.items)
 		self.items = [i for i in self.items if (datetime.datetime.now()-i.timestamp) < self.length]
+		if len(self.items) != l:
+			self._save()
+		self.lock.release()
 	def __len__(self):
 		self._clean()
 		return len(self.items)
 	def put(self, item):
 		self._clean()
+		self.lock.acquire()
 		self.items += [Item(item)]
+		self._save()
+		self.lock.release()
 	def get(self):
 		self._clean()
-		raise Exception("Not Implemented")
+		return [i.value for i in self.items]
 
 class InstaBot:
 	def __init__(self, username='', password='',
@@ -133,9 +127,9 @@ class InstaBot:
 		self.n_jobs = n_jobs
 		self.verbosity = verbosity
 
-		#self.hour_likes = SlidingWindow(3600)
-		#self.hour_follows = SlidingWindow(3600)
-		#self.hour_unfollows = SlidingWindow(3600)
+		self.hour_likes = SlidingWindow(username+'/hour_likes')
+		self.hour_follows = SlidingWindow(username+'/hour_follows')
+		self.hour_unfollows = SlidingWindow(username+'/hour_unfollows')
 
 		self.target_data_path = username+'/target_data/data.pkl'
 		if not os.path.exists(username+'/target_data'):
@@ -328,41 +322,38 @@ class InstaBot:
 			user_media_id = user_item['pk']
 
 			if not(user_item['has_liked']):
-				while len(thread_local.hour_likes) >= self.max_hour_likes:
+				while len(self.hour_likes) >= self.max_hour_likes:
 					if self.verbosity > 1:
 						print("Too many likes in 1 hour ("+
-							str(len(thread_local.hour_likes))+"), sleep 10 minutes")
+							str(len(self.hour_likes))+"), sleep 10 minutes")
 					sleep(600)
 				self.like_media(user_media_id)
-				thread_local.hour_likes.put(user_media_id)
+				self.hour_likes.put(user_media_id)
 
 		# follow
-		while len(thread_local.hour_follows) >= self.max_hour_follows:
+		while len(self.hour_follows) >= self.max_hour_follows:
 			if self.verbosity > 1:
 				print("Too many follows in 1 hour ("+
-					str(len(thread_local.hour_follows))+"), sleep 10 minutes")
+					str(len(self.hour_follows))+"), sleep 10 minutes")
 			sleep(600)
 		self.follow_user(user_id)
-		thread_local.hour_follows.put(user_id)
+		self.hour_follows.put(user_id)
 		thread_local.followed_queue.put(user_id)
 
 	def unfollow_users(self, thread_local):
 		# unfollow if following too many
 		while len(thread_local.followed_queue) >= self.max_followed:
-			while len(thread_local.hour_unfollows) >= self.max_hour_follows:
+			while len(self.hour_unfollows) >= self.max_hour_follows:
 				if self.verbosity > 1:
 					print("Too many unfollows in 1 hour ("+
-						str(len(thread_local.hour_unfollows))+"), sleep 10 minutes")
+						str(len(self.hour_unfollows))+"), sleep 10 minutes")
 				sleep(600)
 			unfollow_id = thread_local.followed_queue.get()
 			self.unfollow_user(unfollow_id)
-			thread_local.hour_unfollows.put(unfollow_id)
+			self.hour_unfollows.put(unfollow_id)
 
 	def update_thread_local(self, thread_local):
 		thread_local.followed_queue = SQLiteQueue(self.username+'/followed_users')
-		thread_local.hour_likes = SQLiteQueue(self.username+'/hour_likes')
-		thread_local.hour_follows = SQLiteQueue(self.username+'/hour_follows')
-		thread_local.hour_unfollows = SQLiteQueue(self.username+'/hour_unfollows')
 
 	def background_unfollows_update_followbacks(self):
 		thread_local = threading.local()
@@ -371,9 +362,9 @@ class InstaBot:
 			if self.verbosity > 0:
 				print(datetime.datetime.now().strftime('%x %X'))
 				print("\tFollowed Users :", len(thread_local.followed_queue))
-				print("\tHour Likes     :", len(thread_local.hour_likes))
-				print("\tHour Follows   :", len(thread_local.hour_follows))
-				print("\tHour Unfollows :", len(thread_local.hour_unfollows))
+				print("\tHour Likes     :", len(self.hour_likes))
+				print("\tHour Follows   :", len(self.hour_follows))
+				print("\tHour Unfollows :", len(self.hour_unfollows))
 				print("\tFollowback Rate:", self.get_follow_back_rate())
 			self.unfollow_users(thread_local)
 			self.update_follow_backs()
