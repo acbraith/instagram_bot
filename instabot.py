@@ -114,7 +114,7 @@ class InstaBot:
 		likes_per_user=3,
 		mean_wait_time=1,
 		max_followed=100,
-		n_jobs=4, verbosity=1):
+		n_jobs=1, verbosity=1):
 
 		self.username = username
 		self.password = password
@@ -355,7 +355,7 @@ class InstaBot:
 	def update_thread_local(self, thread_local):
 		thread_local.followed_queue = SQLiteQueue(self.username+'/followed_users')
 
-	def background_unfollows_update_followbacks(self):
+	def print_info(self):
 		thread_local = threading.local()
 		self.update_thread_local(thread_local)
 		while True:
@@ -366,6 +366,12 @@ class InstaBot:
 				print("\tHour Follows   :", len(self.hour_follows))
 				print("\tHour Unfollows :", len(self.hour_unfollows))
 				print("\tFollowback Rate:", self.get_follow_back_rate())
+			sleep(300)
+
+	def background_unfollows_update_followbacks(self):
+		thread_local = threading.local()
+		self.update_thread_local(thread_local)
+		while True:
 			self.unfollow_users(thread_local)
 			self.update_follow_backs()
 			sleep(300)
@@ -392,6 +398,10 @@ class InstaBot:
 		self.background_thread = threading.Thread(
 			target=self.background_unfollows_update_followbacks)
 		self.background_thread.start()
+		if self.verbosity > 0:
+			self.info_printer = threading.Thread(
+				target=self.print_info)
+			self.info_printer.start()
 
 		self.worker_threads = []
 		for i in range(self.n_jobs):
