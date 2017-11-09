@@ -2,20 +2,74 @@ from InstagramAPI.InstagramAPI import InstagramAPI
 from persistqueue import SQLiteQueue
 from sklearn.linear_model import LogisticRegression
 from time import sleep
-import random, pprint, requests, datetime, sys, pickle, os, yaml
+import threading
+import random, pprint, requests, datetime, sys, pickle, os, yaml, json
 import numpy as np
 import pandas as pd
+
+# modify API slightly so we can multithread properly
+# breaks configureTimelineAlbum, direct_share, 
+# getTotalFollowers, getTotalFollowings, getTotalUserFeed, getTotalLikedMedia
+class ModifiedInstagramAPI(InstagramAPI):
+	def SendRequest(self, endpoint, post = None, login = False):
+		if (not self.isLoggedIn and not login):
+			raise Exception("Not logged in!\n")
+			return;
+		self.s.headers.update ({'Connection' : 'close',
+								'Accept' : '*/*',
+								'Content-type' : 'application/x-www-form-urlencoded; charset=UTF-8',
+								'Cookie2' : '$Version=1',
+								'Accept-Language' : 'en-US',
+								'User-Agent' : self.USER_AGENT})
+		if (post != None): # POST
+			response = self.s.post(self.API_URL + endpoint, data=post) # , verify=False
+		else: # GET
+			response = self.s.get(self.API_URL + endpoint) # , verify=False
+
+		return response
+	def login(self, force = False):
+		if (not self.isLoggedIn or force):
+			self.s = requests.Session()
+			# if you need proxy make something like this:
+			# self.s.proxies = {"https" : "http://proxyip:proxyport"}
+			response = self.SendRequest('si/fetch_headers/?challenge_type=signup&guid=' + self.generateUUID(False), None, True)
+			if response.status_code == 200:
+
+				data = {'phone_id'   : self.generateUUID(True),
+						'_csrftoken' : response.cookies['csrftoken'],
+						'username'   : self.username,
+						'guid'       : self.uuid,
+						'device_id'  : self.device_id,
+						'password'   : self.password,
+						'login_attempt_count' : '0'}
+
+				response = self.SendRequest('accounts/login/', self.generateSignature(json.dumps(data)), True)
+				if response.status_code == 200:
+					self.isLoggedIn = True
+					self.username_id = json.loads(response.text)["logged_in_user"]["pk"]
+					self.rank_token = "%s_%s" % (self.username_id, self.uuid)
+					self.token = response.cookies["csrftoken"]
+
+					self.syncFeatures()
+					self.autoCompleteUserList()
+					self.timelineFeed()
+					self.getv2Inbox()
+					self.getRecentActivity()
+					print ("Login success!\n")
+					return True;
+
 
 class Item:
 	def __init__(self, value):
 		self.value = value
 		self.timestamp = datetime.datetime.now()
-class SlidingWindow:
+class PersistentSlidingWindow:
 	def __init__(self, length, path, check_time = 1/30):
 		self.length = datetime.timedelta(hours=length)
 		self.check_time = datetime.timedelta(hours=check_time)
 		self.last_check = datetime.datetime.now()
 		self.items = SQLiteQueue(path)
+		self.lock = threading.Lock()
 	def _clean(self):
 		# only clean every self.check_time
 		if datetime.datetime.now() - self.last_check < self.check_time:
@@ -28,11 +82,40 @@ class SlidingWindow:
 		for i in items:
 			self.items.put(i)
 	def __len__(self):
+		self.lock.acquire()
+		self._clean()
+		l = len(self.items)
+		self.lock.release()
+		return l
+	def put(self, item):
+		self.lock.acquire()
+		self._clean()
+		self.items.put(Item(item))
+		self.lock.release()
+	def get(self):
+		self.lock.acquire()
+		self._clean()
+		self.lock.release()
+		raise Exception("Not Implemented")
+class SlidingWindow:
+	def __init__(self, length, check_time = 120):
+		self.length = datetime.timedelta(seconds=length)
+		self.check_time = datetime.timedelta(seconds=check_time)
+		self.last_check = datetime.datetime.now()
+		self.items = []
+		self.lock = threading.Lock()
+	def _clean(self):
+		# only clean every self.check_time
+		if datetime.datetime.now() - self.last_check < self.check_time:
+			return
+		# remove old items
+		self.items = [i for i in self.items if (datetime.datetime.now()-i.timestamp) < self.length]
+	def __len__(self):
 		self._clean()
 		return len(self.items)
 	def put(self, item):
 		self._clean()
-		self.items.put(Item(item))
+		self.items += [Item(item)]
 	def get(self):
 		self._clean()
 		raise Exception("Not Implemented")
@@ -43,7 +126,8 @@ class InstaBot:
 		max_hour_likes=1000, max_hour_follows=500,
 		likes_per_user=3,
 		mean_wait_time=1,
-		max_followed=100):
+		max_followed=100,
+		n_jobs=4, verbosity=1):
 
 		self.username = username
 		self.password = password
@@ -53,11 +137,12 @@ class InstaBot:
 		self.likes_per_user = likes_per_user
 		self.mean_wait_time = mean_wait_time
 		self.max_followed = max_followed
+		self.n_jobs = n_jobs
+		self.verbosity = verbosity
 
-		self.followed_queue = SQLiteQueue(username+'/followed_users')
-		self.hour_likes = SlidingWindow(1, username+'/hour_likes')
-		self.hour_follows = SlidingWindow(1, username+'/hour_follows')
-		self.hour_unfollows = SlidingWindow(1, username+'/hour_unfollows')
+		self.hour_likes = SlidingWindow(3600)
+		self.hour_follows = SlidingWindow(3600)
+		self.hour_unfollows = SlidingWindow(3600)
 
 		self.target_data_path = username+'/target_data/data.pkl'
 		if not os.path.exists(username+'/target_data'):
@@ -68,41 +153,52 @@ class InstaBot:
 			self.target_data = pd.DataFrame(
 				columns=['user_id','timestamp','followers','followings','follow_back','tag','likes'])
 
-		self.api = InstagramAPI(username, password)
-		self.send_request(self.api.login)
+		self.target_data_lock = threading.Lock()
 
-		self.train_data = None
+		self.update_model()
+
+		self.api = ModifiedInstagramAPI(username, password)
+		self.api.login()
 
 	def wait(self):
 		t = np.random.exponential(self.mean_wait_time)
-		print("\tSleep",round(t,2),"seconds")
+		if self.verbosity > 2:
+			print("\tSleep",round(t,2),"seconds")
 		sleep(t)
 
 	def send_request(self, request, *args, **kwargs):
-		print(request.__name__, args, kwargs)
+		self.wait()
+		if self.verbosity > 1:
+			print(request.__name__, args, kwargs)
 		try:
-			success = request(*args, **kwargs)
-			self.wait()
-			if not(success):
-				status_code = self.api.LastResponse.status_code
-				print("HTTP", status_code)
-				print(self.api.LastResponse)
-				print(self.api.LastResponse.text)
-				if status_code in [400, 429]:
-					if self.api.LastJson['spam']:
-						print("Spam Detected, sleep 1 hour")
+			response = request(*args, **kwargs)
+			if response.status_code == 200:
+				return json.loads(response.text)
+			else:
+				if self.verbosity > 0:
+					print("HTTP", response.status_code)
+					print(response)
+					print(response.text)
+				if response.status_code in [400, 429]:
+					if json.loads(response.text)['spam']:
+						if self.verbosity > 0:
+							print("Spam Detected, sleep 1 hour")
 						sleep(60*60)
-				return None
 		except Exception as e:
-			print(e)
-			self.wait()
-			return None
-
-		return self.api.LastJson
+			if self.verbosity > 0:
+				print(e)
+		return None
 
 	def get_tag_feed(self, tag):
 		return self.send_request(self.api.tagFeed, tag)
-
+	def get_user_feed(self, user_id):
+		return self.send_request(self.api.getUserFeed, user_id)
+	def like_media(self, media_id):
+		return self.send_request(self.api.like, media_id)
+	def follow_user(self, user_id):
+		return self.send_request(self.api.follow, user_id)
+	def unfollow_user(self, user_id):
+		return self.send_request(self.api.unfollow, user_id)
 	def get_user_followers(self, user_id):
 		ret = self.send_request(self.api.getUserFollowers, user_id)
 		if ret is None:  return 0
@@ -111,27 +207,26 @@ class InstaBot:
 		ret = self.send_request(self.api.getUserFollowings, user_id)
 		if ret is None: return 0
 		return len(ret['users'])
-
-	def get_friendship_info(self, user_id):
+	def followed_by(self, user_id):
 		ret = self.send_request(self.api.userFriendship, user_id)
-		if ret is None: return {
-			'following': False, 'followed_by': False, 'is_bestie': False, 
-			'blocking': False, 'is_blocking_reel': False, 
-			'is_muting_reel': False, 
-			'outgoing_request': False, 'incoming_request': False, 
-			'is_private': False, 'status': 'ok'}
-		return ret
+		try: 
+			return ret['followed_by']
+		except:
+			return False
+
 
 	def save_target_data(self):
 		pickle.dump(self.target_data, open(self.target_data_path,'wb'), protocol=2)
 
 	def update_target_data(self, row):
+		self.target_data_lock.acquire()
 		if row[list(self.target_data.columns).index('user_id')] in self.target_data['user_id']:
 			self.target_data.loc[self.target_data['user_id']==user_id,:] = row
 		else:
 			row = pd.Series(row, index=self.target_data.columns)
 			self.target_data = self.target_data.append(row, ignore_index=True)
 		self.save_target_data()
+		self.target_data_lock.release()
 
 	def update_follow_backs(self):
 		to_update = self.target_data.loc[
@@ -140,34 +235,33 @@ class InstaBot:
 
 		for index, row in to_update.iterrows(): 
 			user_id = row['user_id']
-			follow_back = self.get_friendship_info(user_id)['followed_by']
+			follow_back = self.followed_by(user_id)
 			self.target_data.loc[index, 'follow_back'] = follow_back
 		if len(to_update) > 0:
 			self.save_target_data()
+			self.update_model()
 
 	def get_model_data(self):
 		useful_data = self.target_data.loc[
-			~pd.isnull(self.target_data['follow_back']),
-			['followers','followings','likes','follow_back']]
+			~pd.isnull(self.target_data['follow_back'])]
 		X = useful_data[['followers','followings','likes']].as_matrix()
 		y = useful_data['follow_back'].as_matrix().astype(int)
 		return X,y
 
-	def get_model(self):
+	def update_model(self):
 		X,y = self.get_model_data()
 		if len(np.unique(y)) > 1:
-			model = LogisticRegression().fit(X,y)
-			model._train_data = (X,y)
-			return model
+			self.model = LogisticRegression().fit(X,y)
+			self.model._train_data = (X,y)
 		else:
-			return None
+			self.model = None
 
-	def get_mean_predicted_follow_back_rate(self, model):
-		if model is None:
-			return 0
-		X,y = model._train_data
-		y_pred = model.predict_proba(X)[:,list(model.classes_).index(1)]
-		return np.median(y_pred)
+	def get_follow_back_rate(self):
+		follow_backs = len(self.target_data.loc[self.target_data['follow_back'] == True])
+		no_follow_backs = len(self.target_data.loc[self.target_data['follow_back'] == False])
+		if no_follow_backs == 0 and follow_backs > 0: 
+			return 1
+		return follow_backs / no_follow_backs
 
 	def is_user_target(self, item, tag):
 		'''
@@ -201,17 +295,20 @@ class InstaBot:
 			media_likes = item['like_count']
 
 			X = np.array([user_followers, user_followings, media_likes]).reshape(1,-1)
+			if self.verbosity > 1:
+				print("Target Data",X)
 
-			model = self.get_model()
-			follow_back_rate = self.get_mean_predicted_follow_back_rate(model)
+			follow_back_rate = self.get_follow_back_rate()
+			if self.verbosity > 1:
+				print("Followback Rate",follow_back_rate)
 
 			# target users more likely than average to follow back
 			alpha = follow_back_rate
 			epsilon = 0.1
-			p = 1 if model is None else model.predict_proba(X)[0,list(model.classes_).index(1)]
-			print("Target Data",X)
-			print("Predicted Followback Probability",p)
-			print("Average Predicted Followback Rate",follow_back_rate)
+			p = 1 if self.model is None else \
+				self.model.predict_proba(X)[0,list(self.model.classes_).index(1)]
+			if self.verbosity > 1:
+				print("Followback Confidence",p)
 
 			if p > alpha or random.random() < epsilon: 
 				row = (user_id, datetime.datetime.now(), 
@@ -222,11 +319,13 @@ class InstaBot:
 
 		return False
 
-	def target_user(self, user_id):
-		print("Targetting user", user_id)
-		items = self.send_request(self.api.getUserFeed, user_id)
+	def target_user(self, user_id, thread_local):
+		if self.verbosity > 1:
+			print("Targetting user", user_id)
+		items = self.get_user_feed(user_id)
 		if items is None: 
-			print("User Feed 404")
+			if self.verbosity > 1:
+				print("User Feed 404")
 			return
 
 		# like
@@ -237,42 +336,62 @@ class InstaBot:
 
 			if not(user_item['has_liked']):
 				while len(self.hour_likes) >= self.max_hour_likes:
-					print("Too many likes in 1 hour ("+
-						str(len(self.hour_likes))+"), sleep 10 minutes")
+					if self.verbosity > 1:
+						print("Too many likes in 1 hour ("+
+							str(len(self.hour_likes))+"), sleep 10 minutes")
 					sleep(600)
-				self.send_request(self.api.like, user_media_id)
+				self.like_media(user_media_id)
 				self.hour_likes.put(user_media_id)
 
 		# follow
 		while len(self.hour_follows) >= self.max_hour_follows:
-			print("Too many follows in 1 hour ("+
-				str(len(self.hour_follows))+"), sleep 10 minutes")
+			if self.verbosity > 1:
+				print("Too many follows in 1 hour ("+
+					str(len(self.hour_follows))+"), sleep 10 minutes")
 			sleep(600)
-		self.send_request(self.api.follow, user_id)
+		self.follow_user(user_id)
 		self.hour_follows.put(user_id)
-		self.followed_queue.put(user_id)
+		thread_local.followed_queue.put(user_id)
 
-	def unfollow_users(self):
+	def unfollow_users(self, thread_local):
 		# unfollow if following too many
-		while len(self.followed_queue) >= self.max_followed:
+		while len(thread_local.followed_queue) >= self.max_followed:
 			while len(self.hour_unfollows) >= self.max_hour_follows:
-				print("Too many unfollows in 1 hour ("+
-					str(len(self.hour_unfollows))+"), sleep 10 minutes")
+				if self.verbosity > 1:
+					print("Too many unfollows in 1 hour ("+
+						str(len(self.hour_unfollows))+"), sleep 10 minutes")
 				sleep(600)
-			unfollow_id = self.followed_queue.get()
-			self.send_request(self.api.unfollow, unfollow_id)
+			unfollow_id = thread_local.followed_queue.get()
+			self.unfollow_user(unfollow_id)
 			self.hour_unfollows.put(unfollow_id)
 
-	def run(self):
+	def update_thread_local(self, thread_local):
+		thread_local.followed_queue = SQLiteQueue(self.username+'/followed_users')
+
+	def background_unfollows_update_followbacks(self):
+		thread_local = threading.local()
+		self.update_thread_local(thread_local)
 		while True:
-
-			self.unfollow_users()
+			if self.verbosity > 0:
+				print(datetime.datetime.now().strftime('%x %X'))
+				print("\tFollowed Users :", len(thread_local.followed_queue))
+				print("\tHour Likes     :", len(self.hour_likes))
+				print("\tHour Follows   :", len(self.hour_follows))
+				print("\tHour Unfollows :", len(self.hour_unfollows))
+				print("\tFollowback Rate:", self.get_follow_back_rate())
+			self.unfollow_users(thread_local)
 			self.update_follow_backs()
+			sleep(60)
 
+	def like_follow_users(self):
+		thread_local = threading.local()
+		self.update_thread_local(thread_local)
+		while True:
 			tag = random.choice(self.tag_list)
 			items = self.get_tag_feed(tag)
 			if items is None:
-				print("Tag Feed 404")
+				if self.verbosity > 1:
+					print("Tag Feed 404")
 			else:
 				for i,item in enumerate(items['items']):
 					# change tag
@@ -280,7 +399,19 @@ class InstaBot:
 
 					user_id = item['user']['pk']
 					if self.is_user_target(item, tag):
-						self.target_user(user_id)
+						self.target_user(user_id, thread_local)
+
+	def run(self):
+		self.background_thread = threading.Thread(
+			target=self.background_unfollows_update_followbacks)
+		self.background_thread.start()
+
+		self.worker_threads = []
+		for i in range(self.n_jobs):
+			t = threading.Thread(
+				target=self.like_follow_users)
+			t.start()
+			self.worker_threads += [t]
 
 # usage: python3 instabot.py <USERNAME>
 if __name__ == '__main__':

@@ -3,6 +3,12 @@
 # wait on average mean_wait_time seconds between API queries
 # concurrently followed up to max_followed users
 # unfollow oldest followed users to maintain this number
+# will use n_jobs threads to like/follow, and 1 thread to unfollow/gather followback data
+# verbosity:
+#   0: nothing
+#   1: error messages, periodic likes/follows per hour
+#   2: requests send
+#   3: sleep time
 username:         example # should match directory file is in
 password:         password
 max_hour_likes:   100
@@ -10,6 +16,8 @@ max_hour_follows: 50
 likes_per_user:   3
 mean_wait_time:   1
 max_followed:     100
+verbosity:        1
+n_jobs:           4
 tag_list:
   - hashtag
   - taghash
