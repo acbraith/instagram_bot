@@ -147,7 +147,6 @@ class InstaBot:
 		self.target_data_lock = threading.Lock()
 
 		self.model = LogisticRegression(solver='sag',warm_start=True)
-		self.update_model()
 
 		# MCMC traces for followback rates for each tag
 		self.thetas = None
@@ -223,6 +222,42 @@ class InstaBot:
 		self.save_target_data()
 		self.target_data_lock.release()
 
+	def encode_target_data(self, x):
+		x = np.reshape(x[:-1], (1,-1))
+		#useful_data = self.target_data.loc[
+		#	~pd.isnull(self.target_data['follow_back'])]
+		#useful_tags = len(np.unique(useful_data['tag'].as_matrix()))
+		#if useful_tags >= len(self.tag_list):
+		#	x[:,3] = self.label_enc.transform(x[:,3])
+		#	x = self.oh_enc.transform(x)
+		return x
+
+	def update_thread_local(self, thread_local):
+		thread_local.followed_queue = SQLiteQueue(self.username+'/followed_users')
+
+	def print_info(self):
+		thread_local = threading.local()
+		self.update_thread_local(thread_local)
+		while True:
+			if self.verbosity > 0:
+				print(datetime.datetime.now().strftime('%x %X'))
+				print("\tFollowed Users :", len(thread_local.followed_queue))
+				print("\tHour Likes     :", len(self.hour_likes))
+				print("\tHour Follows   :", len(self.hour_follows))
+				print("\tHour Unfollows :", len(self.hour_unfollows))
+				print("\tFollowback Rate:", self.get_follow_back_rate())
+			sleep(15*60)
+
+	def background_unfollows_update_followbacks(self):
+		thread_local = threading.local()
+		self.update_thread_local(thread_local)
+		while True:
+			self.update_follow_backs()
+			self.update_model()
+			self.fit_hierarchical_model()
+			self.unfollow_users(thread_local)
+			sleep(15*60)
+
 	def update_follow_backs(self):
 		to_update = self.target_data.loc[
 			(datetime.datetime.now()-self.target_data['timestamp'] > datetime.timedelta(days=1)) &
@@ -234,17 +269,38 @@ class InstaBot:
 			self.target_data.loc[index, 'follow_back'] = follow_back
 		if len(to_update) > 0:
 			self.save_target_data()
-			self.update_model()
 
-	def encode_target_data(self, x):
-		x = np.reshape(x[:-1], (1,-1))
-		#useful_data = self.target_data.loc[
-		#	~pd.isnull(self.target_data['follow_back'])]
-		#useful_tags = len(np.unique(useful_data['tag'].as_matrix()))
-		#if useful_tags >= len(self.tag_list):
-		#	x[:,3] = self.label_enc.transform(x[:,3])
-		#	x = self.oh_enc.transform(x)
-		return x
+	def fit_hierarchical_model(self):
+		def get_tag_n_Y(t):
+			n = self.target_data.loc[
+				(~pd.isnull(self.target_data['follow_back'])) &
+				(self.target_data['tag'] == t)]
+			Y = n[n['follow_back'] == True]
+			return (len(n),len(Y))
+		ns_Ys = list(map(get_tag_n_Y, self.tag_list))
+		n,Y = map(np.array, zip(*ns_Ys))
+		
+		with pm.Model() as model:
+			'''
+			Fit hierarchical Bayes model
+
+			alpha  beta
+			    \   /
+			  |----------|
+			  | theta  n |
+			  |   |___/  |
+			  |   Y      |
+			  |----------|
+			'''
+			alpha = pm.Exponential('alpha', lam=100)
+			beta = pm.Exponential('beta', lam=100)
+			theta = pm.Beta('theta', alpha=alpha, beta=beta, shape=len(n))
+			obv = pm.Binomial('obv', n=n, p=theta, observed=Y)
+
+			approx = pm.fit()
+			trace = approx.sample(500)
+
+			self.thetas = trace['theta']
 
 	def get_model_data(self):
 		useful_data = self.target_data.loc[
@@ -266,12 +322,50 @@ class InstaBot:
 		if len(np.unique(y)) > 1:
 			self.model.fit(X,y)
 
-	def get_follow_back_rate(self):
-		follow_backs = len(self.target_data.loc[self.target_data['follow_back'] == True])
-		no_follow_backs = len(self.target_data.loc[self.target_data['follow_back'] == False])
-		if no_follow_backs == 0 and follow_backs > 0: 
-			return 1
-		return follow_backs / no_follow_backs
+	def unfollow_users(self, thread_local):
+		# unfollow if following too many
+		while len(thread_local.followed_queue) >= self.max_followed:
+			while len(self.hour_unfollows) >= self.max_hour_follows:
+				if self.verbosity > 1:
+					print("Too many unfollows in 1 hour ("+
+						str(len(self.hour_unfollows))+"), sleep 10 minutes")
+				sleep(600)
+			unfollow_id = thread_local.followed_queue.get()
+			self.unfollow_user(unfollow_id)
+			self.hour_unfollows.put(unfollow_id)
+
+	def like_follow_users(self):
+		thread_local = threading.local()
+		self.update_thread_local(thread_local)
+		while True:
+			tag = self.select_tag()
+			items = self.get_tag_feed(tag)
+			if items is None:
+				if self.verbosity > 1:
+					print("Tag Feed 404")
+			else:
+				for i,item in enumerate(items['items']):
+					# change tag
+					if i>0: break
+
+					user_id = item['user']['pk']
+					if self.is_user_target(item, tag):
+						self.target_user(user_id, thread_local)
+
+	def select_tag(self):
+		epsilon = 0.1
+		if random.random() < epsilon or self.thetas is None:
+			tag = random.choice(self.tag_list)
+		else:
+			theta_means = np.mean(self.thetas, axis=0)
+			theta_std = np.std(self.thetas, axis=0)
+			theta_ucb = theta_means + theta_std
+
+			#tag = self.tag_list[np.argmax(theta_ucb)]
+
+			w = theta_ucb / np.sum(theta_ucb)
+			tag = np.random.choice(self.tag_list, p=w)
+		return tag
 
 	def is_user_target(self, item, tag):
 		'''
@@ -332,6 +426,13 @@ class InstaBot:
 
 		return False
 
+	def get_follow_back_rate(self):
+		follow_backs = len(self.target_data.loc[self.target_data['follow_back'] == True])
+		no_follow_backs = len(self.target_data.loc[self.target_data['follow_back'] == False])
+		if no_follow_backs == 0: 
+			return 1
+		return follow_backs / no_follow_backs
+
 	def target_user(self, user_id, thread_local):
 		if self.verbosity > 1:
 			print("Targetting user", user_id)
@@ -365,108 +466,6 @@ class InstaBot:
 		self.follow_user(user_id)
 		self.hour_follows.put(user_id)
 		thread_local.followed_queue.put(user_id)
-
-	def unfollow_users(self, thread_local):
-		# unfollow if following too many
-		while len(thread_local.followed_queue) >= self.max_followed:
-			while len(self.hour_unfollows) >= self.max_hour_follows:
-				if self.verbosity > 1:
-					print("Too many unfollows in 1 hour ("+
-						str(len(self.hour_unfollows))+"), sleep 10 minutes")
-				sleep(600)
-			unfollow_id = thread_local.followed_queue.get()
-			self.unfollow_user(unfollow_id)
-			self.hour_unfollows.put(unfollow_id)
-
-	def update_thread_local(self, thread_local):
-		thread_local.followed_queue = SQLiteQueue(self.username+'/followed_users')
-
-	def print_info(self):
-		thread_local = threading.local()
-		self.update_thread_local(thread_local)
-		while True:
-			if self.verbosity > 0:
-				print(datetime.datetime.now().strftime('%x %X'))
-				print("\tFollowed Users :", len(thread_local.followed_queue))
-				print("\tHour Likes     :", len(self.hour_likes))
-				print("\tHour Follows   :", len(self.hour_follows))
-				print("\tHour Unfollows :", len(self.hour_unfollows))
-				print("\tFollowback Rate:", self.get_follow_back_rate())
-			sleep(15*60)
-
-	def background_unfollows_update_followbacks(self):
-		thread_local = threading.local()
-		self.update_thread_local(thread_local)
-		while True:
-			self.fit_hierarchical_model()
-			self.unfollow_users(thread_local)
-			self.update_follow_backs()
-			sleep(15*60)
-
-	def fit_hierarchical_model(self):
-		def get_tag_n_Y(t):
-			n = self.target_data.loc[
-				(~pd.isnull(self.target_data['follow_back'])) &
-				(self.target_data['tag'] == t)]
-			Y = n[n['follow_back'] == True]
-			return (len(n),len(Y))
-		ns_Ys = list(map(get_tag_n_Y, self.tag_list))
-		n,Y = map(np.array, zip(*ns_Ys))
-		
-		with pm.Model() as model:
-			'''
-			Fit hierarchical Bayes model
-
-			alpha  beta
-			    \   /
-			  |----------|
-			  | theta  n |
-			  |   |___/  |
-			  |   Y      |
-			  |----------|
-			'''
-			alpha = pm.Exponential('alpha', lam=100)
-			beta = pm.Exponential('beta', lam=100)
-			theta = pm.Beta('theta', alpha=alpha, beta=beta, shape=len(n))
-			obv = pm.Binomial('obv', n=n, p=theta, observed=Y)
-
-			approx = pm.fit()
-			trace = approx.sample(500)
-
-			self.thetas = trace['theta']
-
-	def select_tag(self):
-		epsilon = 0.1
-		if random.random() < epsilon or self.thetas is None:
-			tag = random.choice(self.tag_list)
-		else:
-			theta_means = np.mean(self.thetas, axis=0)
-			theta_std = np.std(self.thetas, axis=0)
-			theta_ucb = theta_means + theta_std
-
-			#tag = self.tag_list[np.argmax(theta_ucb)]
-
-			w = theta_ucb / np.sum(theta_ucb)
-			tag = np.random.choice(self.tag_list, p=w)
-		return tag
-
-	def like_follow_users(self):
-		thread_local = threading.local()
-		self.update_thread_local(thread_local)
-		while True:
-			tag = self.select_tag()
-			items = self.get_tag_feed(tag)
-			if items is None:
-				if self.verbosity > 1:
-					print("Tag Feed 404")
-			else:
-				for i,item in enumerate(items['items']):
-					# change tag
-					if i>0: break
-
-					user_id = item['user']['pk']
-					if self.is_user_target(item, tag):
-						self.target_user(user_id, thread_local)
 
 	def run(self):
 		self.background_thread = threading.Thread(
