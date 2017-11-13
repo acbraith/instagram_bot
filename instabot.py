@@ -448,7 +448,6 @@ class InstaBot:
 
 			w = theta_ucb / np.sum(theta_ucb)
 			tag = np.random.choice(self.tag_list, p=w)
-			print(tag)
 		return tag
 
 	def like_follow_users(self):
