@@ -1,11 +1,15 @@
 from InstagramAPI.InstagramAPI import InstagramAPI
 from persistqueue import SQLiteQueue
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import LabelEncoder,OneHotEncoder
+from sklearn.exceptions import NotFittedError
+
 from time import sleep
 import threading
 import random, pprint, requests, datetime, sys, pickle, os, yaml, json
 import numpy as np
 import pandas as pd
+import pymc3 as pm
 
 # modify API slightly so we can multithread properly
 # breaks configureTimelineAlbum, direct_share, 
@@ -67,7 +71,7 @@ class SlidingWindow:
 	def __init__(self, path, length = 3600, check_time = 120):
 		self.length = datetime.timedelta(seconds=length)
 		self.check_time = datetime.timedelta(seconds=check_time)
-		self.last_check = datetime.datetime.now()
+		self.last_check = datetime.datetime.now() - self.check_time * 2
 		self.lock = threading.Lock()
 		self.filepath = path+'/data.pkl'
 		if not os.path.exists(path):
@@ -142,7 +146,11 @@ class InstaBot:
 
 		self.target_data_lock = threading.Lock()
 
+		self.model = LogisticRegression(solver='sag',warm_start=True)
 		self.update_model()
+
+		# MCMC traces for followback rates for each tag
+		self.thetas = None
 
 		self.api = ModifiedInstagramAPI(username, password)
 		self.api.login()
@@ -228,20 +236,35 @@ class InstaBot:
 			self.save_target_data()
 			self.update_model()
 
+	def encode_target_data(self, x):
+		x = np.reshape(x[:-1], (1,-1))
+		#useful_data = self.target_data.loc[
+		#	~pd.isnull(self.target_data['follow_back'])]
+		#useful_tags = len(np.unique(useful_data['tag'].as_matrix()))
+		#if useful_tags >= len(self.tag_list):
+		#	x[:,3] = self.label_enc.transform(x[:,3])
+		#	x = self.oh_enc.transform(x)
+		return x
+
 	def get_model_data(self):
 		useful_data = self.target_data.loc[
 			~pd.isnull(self.target_data['follow_back'])]
-		X = useful_data[['followers','followings','likes']].as_matrix()
+		useful_tags = len(np.unique(useful_data['tag'].as_matrix()))
+		if True:#useful_tags < len(self.tag_list):
+			X = useful_data[['followers','followings','likes']].as_matrix()
+		else:
+			X = useful_data[['followers','followings','likes','tag']].as_matrix()
+			self.label_enc = LabelEncoder().fit(X[:,3])
+			X[:,3] = self.label_enc.transform(X[:,3])
+			self.oh_enc = OneHotEncoder(categorical_features=[3]).fit(X)
+			X = self.oh_enc.transform(X)
 		y = useful_data['follow_back'].as_matrix().astype(int)
 		return X,y
 
 	def update_model(self):
 		X,y = self.get_model_data()
 		if len(np.unique(y)) > 1:
-			self.model = LogisticRegression().fit(X,y)
-			self.model._train_data = (X,y)
-		else:
-			self.model = None
+			self.model.fit(X,y)
 
 	def get_follow_back_rate(self):
 		follow_backs = len(self.target_data.loc[self.target_data['follow_back'] == True])
@@ -281,7 +304,7 @@ class InstaBot:
 			user_followings = self.get_user_followings(user_id)
 			media_likes = item['like_count']
 
-			X = np.array([user_followers, user_followings, media_likes]).reshape(1,-1)
+			X = self.encode_target_data([user_followers, user_followings, media_likes,tag])
 			if self.verbosity > 1:
 				print("Target Data",X)
 
@@ -292,8 +315,11 @@ class InstaBot:
 			# target users more likely than average to follow back
 			alpha = follow_back_rate
 			epsilon = 0.1
-			p = 1 if self.model is None else \
-				self.model.predict_proba(X)[0,list(self.model.classes_).index(1)]
+			try:
+				p = self.model.predict_proba(X)[0,list(self.model.classes_).index(1)]
+			except NotFittedError:
+				p = 1
+				
 			if self.verbosity > 1:
 				print("Followback Confidence",p)
 
@@ -366,21 +392,70 @@ class InstaBot:
 				print("\tHour Follows   :", len(self.hour_follows))
 				print("\tHour Unfollows :", len(self.hour_unfollows))
 				print("\tFollowback Rate:", self.get_follow_back_rate())
-			sleep(300)
+			sleep(15*60)
 
 	def background_unfollows_update_followbacks(self):
 		thread_local = threading.local()
 		self.update_thread_local(thread_local)
 		while True:
+			self.fit_hierarchical_model()
 			self.unfollow_users(thread_local)
 			self.update_follow_backs()
-			sleep(300)
+			sleep(15*60)
+
+	def fit_hierarchical_model(self):
+		def get_tag_n_Y(t):
+			n = self.target_data.loc[
+				(~pd.isnull(self.target_data['follow_back'])) &
+				(self.target_data['tag'] == t)]
+			Y = n[n['follow_back'] == True]
+			return (len(n),len(Y))
+		ns_Ys = list(map(get_tag_n_Y, self.tag_list))
+		n,Y = map(np.array, zip(*ns_Ys))
+		
+		with pm.Model() as model:
+			'''
+			Fit hierarchical Bayes model
+
+			alpha  beta
+			    \   /
+			  |----------|
+			  | theta  n |
+			  |   |___/  |
+			  |   Y      |
+			  |----------|
+			'''
+			alpha = pm.Exponential('alpha', lam=100)
+			beta = pm.Exponential('beta', lam=100)
+			theta = pm.Beta('theta', alpha=alpha, beta=beta, shape=len(n))
+			obv = pm.Binomial('obv', n=n, p=theta, observed=Y)
+
+			approx = pm.fit()
+			trace = approx.sample(500)
+
+			self.thetas = trace['theta']
+
+	def select_tag(self):
+		epsilon = 0.1
+		if random.random() < epsilon or self.thetas is None:
+			tag = random.choice(self.tag_list)
+		else:
+			theta_means = np.mean(self.thetas, axis=0)
+			theta_std = np.std(self.thetas, axis=0)
+			theta_ucb = theta_means + theta_std
+
+			#tag = self.tag_list[np.argmax(theta_ucb)]
+
+			w = theta_ucb / np.sum(theta_ucb)
+			tag = np.random.choice(self.tag_list, p=w)
+			print(tag)
+		return tag
 
 	def like_follow_users(self):
 		thread_local = threading.local()
 		self.update_thread_local(thread_local)
 		while True:
-			tag = random.choice(self.tag_list)
+			tag = self.select_tag()
 			items = self.get_tag_feed(tag)
 			if items is None:
 				if self.verbosity > 1:
