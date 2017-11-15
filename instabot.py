@@ -416,14 +416,18 @@ class InstaBot:
 			# threshold is an exponent
 			# higher threshold = lower confidence required
 			# at frac=1, thresold = k
-			# higher m = higher threshold for lower frac
-			if frac < .9:
-				self.target_confidence_rate += .1
-			elif frac > .7:
+			# higher m = higher threshold for lower frac = less selective
+			# lower m = more selective
+			if frac < .8:
 				self.target_confidence_rate -= .1
+			elif frac > .9:
+				self.target_confidence_rate += .1
 			threshold = k / frac**m
 			if self.verbosity > 1:
 				print("Followback Rate",follow_back_rate)
+				print("frac",frac)
+				print("target_confidence_rate",self.target_confidence_rate)
+				print("threshold",threshold)
 				print("Confidence Threshold",follow_back_rate**threshold)
 			try:
 				p = self.model.predict_proba(X)[0,list(self.model.classes_).index(1)]
