@@ -225,7 +225,7 @@ class InstaBot:
 		self.target_data_lock.release()
 
 	def encode_target_data(self, x):
-		x = np.reshape(x[:-1], (1,-1))
+		x = np.reshape(x[:-2], (1,-1))
 		#useful_data = self.target_data.loc[
 		#	~pd.isnull(self.target_data['follow_back'])]
 		#useful_tags = len(np.unique(useful_data['tag'].as_matrix()))
@@ -309,7 +309,7 @@ class InstaBot:
 			~pd.isnull(self.target_data['follow_back'])]
 		useful_tags = len(np.unique(useful_data['tag'].as_matrix()))
 		if True:#useful_tags < len(self.tag_list):
-			X = useful_data[['followers','followings','likes']].as_matrix()
+			X = useful_data[['followers','followings']].as_matrix()
 		else:
 			X = useful_data[['followers','followings','likes','tag']].as_matrix()
 			self.label_enc = LabelEncoder().fit(X[:,3])
@@ -459,29 +459,31 @@ class InstaBot:
 			return
 
 		# like
-		for i,user_item in enumerate(items['items']):
-			if i >= self.likes_per_user: break
+		if self.max_hour_likes > 0:
+			for i,user_item in enumerate(items['items']):
+				if i >= self.likes_per_user: break
 
-			user_media_id = user_item['pk']
+				user_media_id = user_item['pk']
 
-			if not(user_item['has_liked']):
-				while len(self.hour_likes) >= self.max_hour_likes:
-					if self.verbosity > 1:
-						print("Too many likes in 1 hour ("+
-							str(len(self.hour_likes))+"), sleep 10 minutes")
-					sleep(600)
-				self.like_media(user_media_id)
-				self.hour_likes.put(user_media_id)
+				if not(user_item['has_liked']):
+					while len(self.hour_likes) >= self.max_hour_likes:
+						if self.verbosity > 1:
+							print("Too many likes in 1 hour ("+
+								str(len(self.hour_likes))+"), sleep 10 minutes")
+						sleep(600)
+					self.like_media(user_media_id)
+					self.hour_likes.put(user_media_id)
 
 		# follow
-		while len(self.hour_follows) >= self.max_hour_follows:
-			if self.verbosity > 1:
-				print("Too many follows in 1 hour ("+
-					str(len(self.hour_follows))+"), sleep 10 minutes")
-			sleep(600)
-		self.follow_user(user_id)
-		self.hour_follows.put(user_id)
-		thread_local.followed_queue.put(user_id)
+		if self.max_hour_follows > 0 and self.max_followed > 0:
+			while len(self.hour_follows) >= self.max_hour_follows:
+				if self.verbosity > 1:
+					print("Too many follows in 1 hour ("+
+						str(len(self.hour_follows))+"), sleep 10 minutes")
+				sleep(600)
+			self.follow_user(user_id)
+			self.hour_follows.put(user_id)
+			thread_local.followed_queue.put(user_id)
 
 	def run(self):
 		self.background_thread = threading.Thread(
