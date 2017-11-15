@@ -150,6 +150,8 @@ class InstaBot:
 
 		# MCMC traces for followback rates for each tag
 		self.thetas = None
+		# used for confidence threshold to target a user
+		self.target_confidence_rate = np.log(2) / (2*np.log(2) - np.log(3))
 
 		self.api = ModifiedInstagramAPI(username, password)
 		self.api.login()
@@ -328,8 +330,8 @@ class InstaBot:
 			while len(self.hour_unfollows) >= self.max_hour_follows:
 				if self.verbosity > 1:
 					print("Too many unfollows in 1 hour ("+
-						str(len(self.hour_unfollows))+"), sleep 10 minutes")
-				sleep(600)
+						str(len(self.hour_unfollows))+"), stop unfollowing")
+				return
 			unfollow_id = thread_local.followed_queue.get()
 			self.unfollow_user(unfollow_id)
 			self.hour_unfollows.put(unfollow_id)
@@ -353,18 +355,17 @@ class InstaBot:
 						self.target_user(user_id, thread_local)
 
 	def select_tag(self):
-		epsilon = 0.1
-		if random.random() < epsilon or self.thetas is None:
-			tag = random.choice(self.tag_list)
-		else:
-			theta_means = np.mean(self.thetas, axis=0)
-			theta_std = np.std(self.thetas, axis=0)
-			theta_ucb = theta_means + theta_std
+		if self.thetas is None:
+			return random.choice(self.tag_list)
 
-			#tag = self.tag_list[np.argmax(theta_ucb)]
+		theta_means = np.mean(self.thetas, axis=0)
+		theta_std = np.std(self.thetas, axis=0)
+		theta_ucb = theta_means + theta_std
 
-			w = theta_ucb / np.sum(theta_ucb)
-			tag = np.random.choice(self.tag_list, p=w)
+		#tag = self.tag_list[np.argmax(theta_ucb)]
+
+		w = theta_ucb / np.sum(theta_ucb)
+		tag = np.random.choice(self.tag_list, p=w)
 		return tag
 
 	def is_user_target(self, item, tag):
@@ -403,12 +404,27 @@ class InstaBot:
 				print("Target Data",X)
 
 			follow_back_rate = self.get_follow_back_rate()
-			if self.verbosity > 1:
-				print("Followback Rate",follow_back_rate)
 
 			# target users more likely than average to follow back
-			alpha = follow_back_rate
-			epsilon = 0.1
+			# confidence threshold for follow back:
+			# frac = fraction hour like limit used
+			# k, m constants
+			# threshold = k / frac^m
+			k = 0.1
+			m = self.target_confidence_rate
+			frac = len(self.hour_likes) / self.max_hour_likes
+			# threshold is an exponent
+			# higher threshold = lower confidence required
+			# at frac=1, thresold = k
+			# higher m = higher threshold for lower frac
+			if frac < .9:
+				self.target_confidence_rate += .1
+			elif frac > .7:
+				self.target_confidence_rate -= .1
+			threshold = k / frac**m
+			if self.verbosity > 1:
+				print("Followback Rate",follow_back_rate)
+				print("Confidence Threshold",follow_back_rate**threshold)
 			try:
 				p = self.model.predict_proba(X)[0,list(self.model.classes_).index(1)]
 			except NotFittedError:
@@ -417,7 +433,7 @@ class InstaBot:
 			if self.verbosity > 1:
 				print("Followback Confidence",p)
 
-			if p > alpha or random.random() < epsilon: 
+			if p > follow_back_rate**threshold: 
 				row = (user_id, datetime.datetime.now(), 
 					user_followers, user_followings, np.nan,
 					tag, media_likes)
