@@ -63,11 +63,11 @@ class ModifiedInstagramAPI(InstagramAPI):
 					return True;
 
 
-class Item:
-	def __init__(self, value):
-		self.value = value
-		self.timestamp = datetime.datetime.now()
 class SlidingWindow:
+	class Item:
+		def __init__(self, value):
+			self.value = value
+			self.timestamp = datetime.datetime.now()
 	def __init__(self, path, length = 3600, check_time = 120):
 		self.length = datetime.timedelta(seconds=length)
 		self.check_time = datetime.timedelta(seconds=check_time)
@@ -104,12 +104,36 @@ class SlidingWindow:
 	def put(self, item):
 		self._clean()
 		self.lock.acquire()
-		self.items += [Item(item)]
+		self.items += [self.Item(item)]
 		self._save()
 		self.lock.release()
 	def get(self):
 		self._clean()
 		return [i.value for i in self.items]
+
+class PriorityQueue:
+	class Item:
+		def __init__(self, value, priority):
+			self.value = value
+			self.priority = priority
+	def __init__(self, size):
+		self.items = []
+		self.size = size
+	def __len__(self):
+		return len(self.items)
+	def is_full(self):
+		return len(self) >= self.size
+	def put(self, item, priority):
+		self.items += [self.Item(item, priority)]
+		if len(self) > self.size:
+			idx = np.argmin([i.priority for i in self.items])
+			del self.items[idx]
+	def get(self):
+		if len(self) == 0: return None
+		idx = np.argmax([i.priority for i in self.items])
+		item = self.items[idx]
+		del self.items[idx]
+		return item.value
 
 class InstaBot:
 	def __init__(self, username='', password='',
@@ -118,7 +142,7 @@ class InstaBot:
 		likes_per_user=3,
 		mean_wait_time=1,
 		max_followed=100,
-		n_jobs=1, verbosity=1):
+		verbosity=1):
 
 		self.username = username
 		self.password = password
@@ -128,8 +152,9 @@ class InstaBot:
 		self.likes_per_user = likes_per_user
 		self.mean_wait_time = mean_wait_time
 		self.max_followed = max_followed
-		self.n_jobs = n_jobs
 		self.verbosity = verbosity
+
+		self.targets_queue = PriorityQueue(self.max_hour_follows * 2)
 
 		self.hour_likes = SlidingWindow(username+'/hour_likes')
 		self.hour_follows = SlidingWindow(username+'/hour_follows')
@@ -148,10 +173,7 @@ class InstaBot:
 
 		self.model = LogisticRegression(solver='sag',warm_start=True)
 
-		# MCMC traces for followback rates for each tag
-		self.thetas = None
-		# used for confidence threshold to target a user
-		self.target_confidence_rate = np.log(2) / (2*np.log(2) - np.log(3))
+		self.api_lock = threading.Lock()
 
 		self.api = ModifiedInstagramAPI(username, password)
 		self.api.login()
@@ -163,18 +185,21 @@ class InstaBot:
 		sleep(t)
 
 	def send_request(self, request, *args, **kwargs):
+		self.api_lock.acquire()
 		self.wait()
+		ret = None
 		if self.verbosity > 1:
 			print(request.__name__, args, kwargs)
 		try:
 			response = request(*args, **kwargs)
 			if response.status_code == 200:
-				return json.loads(response.text)
+				ret = json.loads(response.text)
 			else:
 				if self.verbosity > 0:
 					print("HTTP", response.status_code)
 					print(response)
-					print(response.text)
+					if self.verbosity > 1:
+						print(response.text)
 				if response.status_code in [400, 429]:
 					if json.loads(response.text)['spam']:
 						if self.verbosity > 0:
@@ -183,7 +208,8 @@ class InstaBot:
 		except Exception as e:
 			if self.verbosity > 0:
 				print(e)
-		return None
+		self.api_lock.release()
+		return ret
 
 	def get_tag_feed(self, tag):
 		return self.send_request(self.api.tagFeed, tag)
@@ -210,300 +236,205 @@ class InstaBot:
 		except:
 			return False
 
-
 	def save_target_data(self):
 		pickle.dump(self.target_data, open(self.target_data_path,'wb'), protocol=2)
 
 	def update_target_data(self, row):
-		self.target_data_lock.acquire()
+		#self.target_data_lock.acquire()
 		if row[list(self.target_data.columns).index('user_id')] in self.target_data['user_id']:
 			self.target_data.loc[self.target_data['user_id']==user_id,:] = row
 		else:
 			row = pd.Series(row, index=self.target_data.columns)
 			self.target_data = self.target_data.append(row, ignore_index=True)
 		self.save_target_data()
-		self.target_data_lock.release()
+		#self.target_data_lock.release()
 
-	def encode_target_data(self, x):
-		x = np.reshape(x[:-2], (1,-1))
-		#useful_data = self.target_data.loc[
-		#	~pd.isnull(self.target_data['follow_back'])]
-		#useful_tags = len(np.unique(useful_data['tag'].as_matrix()))
-		#if useful_tags >= len(self.tag_list):
-		#	x[:,3] = self.label_enc.transform(x[:,3])
-		#	x = self.oh_enc.transform(x)
-		return x
+	def one_hot_encode_tags(self, tags):
+		tags = np.array(tags).reshape(-1)
+		def tag_idx(tag):
+			if tag in self.tag_list: return self.tag_list.index(tag)
+			return len(self.tag_list)
+		tags = [tag_idx(t) for t in tags]
+		one_hot_tags = np.eye(len(self.tag_list)+1)[tags]
+		return one_hot_tags
 
-	def update_thread_local(self, thread_local):
-		thread_local.followed_queue = SQLiteQueue(self.username+'/followed_users')
+	# # # # # # # # # # 
+	# Bot Workers
+	# # # # # # # # # # 
+	def fit_model(self):
+
+		def update_follow_backs():
+			#self.target_data_lock.acquire()
+			to_update = self.target_data.loc[
+				(datetime.datetime.now()-self.target_data['timestamp'] > datetime.timedelta(days=1)) &
+				pd.isnull(self.target_data['follow_back'])]
+
+			for index, row in to_update.iterrows(): 
+				user_id = row['user_id']
+				follow_back = self.followed_by(user_id)
+				self.target_data.loc[index, 'follow_back'] = follow_back
+			if len(to_update) > 0:
+				self.save_target_data()
+			#self.target_data_lock.release()
+
+		def update_model():
+
+			def get_model_data():
+				useful_data = self.target_data.loc[
+					~pd.isnull(self.target_data['follow_back'])]
+				X = useful_data[['followers','followings']].as_matrix()
+				tags = useful_data[['tag']].as_matrix()
+				tags = self.one_hot_encode_tags(tags)
+				X = np.append(X, tags, axis=1)
+				y = useful_data['follow_back'].as_matrix().astype(int)
+				return X,y
+
+			X,y = get_model_data()
+			if len(np.unique(y)) > 1:
+				self.model.fit(X,y)
+
+		while True:
+			update_model()
+			update_follow_backs()
+			sleep(15*60)
 
 	def print_info(self):
-		thread_local = threading.local()
-		self.update_thread_local(thread_local)
+		followed_queue = SQLiteQueue(self.username+'/followed_users')
 		while True:
 			if self.verbosity > 0:
 				print(datetime.datetime.now().strftime('%x %X'))
-				print("\tFollowed Users :", len(thread_local.followed_queue))
-				print("\tHour Likes     :", len(self.hour_likes))
-				print("\tHour Follows   :", len(self.hour_follows))
-				print("\tHour Unfollows :", len(self.hour_unfollows))
-				print("\tFollowback Rate:", self.get_follow_back_rate())
+				print("\tFollowed Users   :", len(followed_queue))
+				print("\tHour Likes       :", len(self.hour_likes))
+				print("\tHour Follows     :", len(self.hour_follows))
+				print("\tHour Unfollows   :", len(self.hour_unfollows))
+				print("\tTargets Queue Len:", len(self.targets_queue))
+				print("\tTargets Queue Max:", max([0]+[i.priority for i in self.targets_queue.items]))
 			sleep(15*60)
 
-	def background_unfollows_update_followbacks(self):
-		thread_local = threading.local()
-		self.update_thread_local(thread_local)
-		while True:
-			self.update_follow_backs()
-			self.update_model()
-			self.fit_hierarchical_model()
-			self.unfollow_users(thread_local)
-			sleep(15*60)
+	def find_targets(self):
 
-	def update_follow_backs(self):
-		to_update = self.target_data.loc[
-			(datetime.datetime.now()-self.target_data['timestamp'] > datetime.timedelta(days=1)) &
-			pd.isnull(self.target_data['follow_back'])]
-
-		for index, row in to_update.iterrows(): 
-			user_id = row['user_id']
-			follow_back = self.followed_by(user_id)
-			self.target_data.loc[index, 'follow_back'] = follow_back
-		if len(to_update) > 0:
-			self.save_target_data()
-
-	def fit_hierarchical_model(self):
-		def get_tag_n_Y(t):
-			n = self.target_data.loc[
-				(~pd.isnull(self.target_data['follow_back'])) &
-				(self.target_data['tag'] == t)]
-			Y = n[n['follow_back'] == True]
-			return (len(n),len(Y))
-		ns_Ys = list(map(get_tag_n_Y, self.tag_list))
-		n,Y = map(np.array, zip(*ns_Ys))
-		
-		with pm.Model() as model:
-			'''
-			Fit hierarchical Bayes model
-
-			alpha  beta
-			    \   /
-			  |----------|
-			  | theta  n |
-			  |   |___/  |
-			  |   Y      |
-			  |----------|
-			'''
-			alpha = pm.Exponential('alpha', lam=100)
-			beta = pm.Exponential('beta', lam=100)
-			theta = pm.Beta('theta', alpha=alpha, beta=beta, shape=len(n))
-			obv = pm.Binomial('obv', n=n, p=theta, observed=Y)
-
-			approx = pm.fit()
-			trace = approx.sample(500)
-
-			self.thetas = trace['theta']
-
-	def get_model_data(self):
-		useful_data = self.target_data.loc[
-			~pd.isnull(self.target_data['follow_back'])]
-		useful_tags = len(np.unique(useful_data['tag'].as_matrix()))
-		if True:#useful_tags < len(self.tag_list):
-			X = useful_data[['followers','followings']].as_matrix()
-		else:
-			X = useful_data[['followers','followings','likes','tag']].as_matrix()
-			self.label_enc = LabelEncoder().fit(X[:,3])
-			X[:,3] = self.label_enc.transform(X[:,3])
-			self.oh_enc = OneHotEncoder(categorical_features=[3]).fit(X)
-			X = self.oh_enc.transform(X)
-		y = useful_data['follow_back'].as_matrix().astype(int)
-		return X,y
-
-	def update_model(self):
-		X,y = self.get_model_data()
-		if len(np.unique(y)) > 1:
-			self.model.fit(X,y)
-
-	def unfollow_users(self, thread_local):
-		# unfollow if following too many
-		while len(thread_local.followed_queue) >= self.max_followed:
-			while len(self.hour_unfollows) >= self.max_hour_follows:
-				if self.verbosity > 1:
-					print("Too many unfollows in 1 hour ("+
-						str(len(self.hour_unfollows))+"), stop unfollowing")
-				return
-			unfollow_id = thread_local.followed_queue.get()
-			self.unfollow_user(unfollow_id)
-			self.hour_unfollows.put(unfollow_id)
-
-	def like_follow_users(self):
-		thread_local = threading.local()
-		self.update_thread_local(thread_local)
-		while True:
-			tag = self.select_tag()
-			items = self.get_tag_feed(tag)
-			if items is None:
-				if self.verbosity > 1:
-					print("Tag Feed 404")
-			else:
-				for i,item in enumerate(items['items']):
-					# change tag
-					if i>0: break
-
-					user_id = item['user']['pk']
-					if self.is_user_target(item, tag):
-						self.target_user(user_id, thread_local)
-
-	def select_tag(self):
-		if self.thetas is None:
+		def select_tag():
 			return random.choice(self.tag_list)
 
-		theta_means = np.mean(self.thetas, axis=0)
-		theta_std = np.std(self.thetas, axis=0)
-		theta_ucb = theta_means + theta_std
-
-		#tag = self.tag_list[np.argmax(theta_ucb)]
-
-		w = theta_ucb / np.sum(theta_ucb)
-		tag = np.random.choice(self.tag_list, p=w)
-		return tag
-
-	def is_user_target(self, item, tag):
-		'''
-		Reinforcement learning inspired decision
-		inputs:
-			user followers, followings
-			photo likes
-		output:
-			follow back probability (trained from historical data)
-
-		Need to track inputs alongside user id for all users targetted
-		Then 1 day later check if followed back or not; log these as outputs
-		Train model on this
-		Use model to predict follow back probability for new targets
-			logistic regression model
-		epsilon greedy strategy;
-			probability 1-epsilon: only target if followback prob > alpha
-			probability epsilon always target
-
-		'''
-		user_id = item['user']['pk']
-		# decide if good target
-		# basic criteria
-		if not(item['has_liked']) and \
-			not(item['user']['friendship_status']['following']) and \
-			not(item['user']['friendship_status']['is_bestie']) and \
-			not(item['user']['friendship_status']['outgoing_request']):
-
-			user_followers = self.get_user_followers(user_id)
-			user_followings = self.get_user_followings(user_id)
-			media_likes = item['like_count']
-
-			X = self.encode_target_data([user_followers, user_followings, media_likes,tag])
-			if self.verbosity > 1:
-				print("Target Data",X)
-
-			follow_back_rate = self.get_follow_back_rate()
-
-			# target users more likely than average to follow back
-			# confidence threshold for follow back:
-			# frac = fraction hour like limit used
-			# k, m constants
-			# threshold = k / frac^m
-			k = 0.1
-			m = self.target_confidence_rate
-			frac = len(self.hour_likes) / self.max_hour_likes
-			# threshold is an exponent
-			# higher threshold = lower confidence required
-			# at frac=1, thresold = k
-			# higher m = higher threshold for lower frac = less selective
-			# lower m = more selective
-			if frac < .8:
-				self.target_confidence_rate -= .1
-			elif frac > .9:
-				self.target_confidence_rate += .1
-			threshold = k / frac**m
-			if self.verbosity > 1:
-				print("Followback Rate",follow_back_rate)
-				print("frac",frac)
-				print("target_confidence_rate",self.target_confidence_rate)
-				print("threshold",threshold)
-				print("Confidence Threshold",follow_back_rate**threshold)
+		def get_followback_confidence(user_info):
+			x = [user_info['followers'], user_info['followings']]
+			x = np.reshape(x,(1,-1))
+			tag = self.one_hot_encode_tags([user_info['tag']])
+			x = np.append(x, tag, axis=1)
 			try:
-				p = self.model.predict_proba(X)[0,list(self.model.classes_).index(1)]
+				followback_confidence = \
+					self.model.predict_proba(x)[0,list(self.model.classes_).index(1)]
 			except NotFittedError:
-				p = 1
-				
-			if self.verbosity > 1:
-				print("Followback Confidence",p)
+				followback_confidence = 1
+			return followback_confidence
 
-			if p > follow_back_rate**threshold: 
-				row = (user_id, datetime.datetime.now(), 
-					user_followers, user_followings, np.nan,
-					tag, media_likes)
-				self.update_target_data(row)
-				return True
+		# build up self.targets_queue
+		while True:
+			for _ in range(self.max_hour_follows):
+				tag = select_tag()
+				items = self.get_tag_feed(tag)
+				if items is None:
+					if self.verbosity > 1:
+						print("Tag Feed 404")
+				else:
+					for i,item in enumerate(items['items']):
+						if i>5 or self.targets_queue.is_full(): break
 
-		return False
+						user_id = item['user']['pk']
+						user_followers = self.get_user_followers(user_id)
+						user_followings = self.get_user_followings(user_id)
 
-	def get_follow_back_rate(self):
-		follow_backs = len(self.target_data.loc[self.target_data['follow_back'] == True])
-		no_follow_backs = len(self.target_data.loc[self.target_data['follow_back'] == False])
-		if no_follow_backs == 0: 
-			return 1
-		return follow_backs / no_follow_backs
+						user_info = {
+							'user_id':user_id,
+							'followers':user_followers,
+							'followings':user_followings,
+							'likes':item['like_count'],
+							'tag':tag,
+							'discovery_time':datetime.datetime.now()}
 
-	def target_user(self, user_id, thread_local):
-		if self.verbosity > 1:
-			print("Targetting user", user_id)
-		items = self.get_user_feed(user_id)
-		if items is None: 
-			if self.verbosity > 1:
-				print("User Feed 404")
-			return
+						followback_confidence = get_followback_confidence(user_info)
 
-		# like
-		if self.max_hour_likes > 0:
-			for i,user_item in enumerate(items['items']):
-				if i >= self.likes_per_user: break
+						self.targets_queue.put(user_info, followback_confidence)
+			sleep(15*60)
 
-				user_media_id = user_item['pk']
+	def like_follow_unfollow(self):
 
-				if not(user_item['has_liked']):
-					while len(self.hour_likes) >= self.max_hour_likes:
-						if self.verbosity > 1:
-							print("Too many likes in 1 hour ("+
-								str(len(self.hour_likes))+"), sleep 10 minutes")
-						sleep(600)
-					self.like_media(user_media_id)
-					self.hour_likes.put(user_media_id)
+		def target_users():
 
-		# follow
-		if self.max_hour_follows > 0 and self.max_followed > 0:
-			while len(self.hour_follows) >= self.max_hour_follows:
+			def target_user(user_id):
 				if self.verbosity > 1:
-					print("Too many follows in 1 hour ("+
-						str(len(self.hour_follows))+"), sleep 10 minutes")
-				sleep(600)
-			self.follow_user(user_id)
-			self.hour_follows.put(user_id)
-			thread_local.followed_queue.put(user_id)
+					print("Targetting user", user_id)
+				items = self.get_user_feed(user_id)
+				if items is None: 
+					if self.verbosity > 1:
+						print("User Feed 404")
+					return
+
+				# like
+				if self.max_hour_likes > 0:
+					for i,item in enumerate(items['items']):
+						if i >= self.likes_per_user: break
+
+						media_id = item['pk']
+
+						if not(item['has_liked']):
+							self.like_media(media_id)
+							self.hour_likes.put(media_id)
+
+				# follow
+				if self.max_hour_follows > 0 and self.max_followed > 0:
+					self.follow_user(user_id)
+					self.hour_follows.put(user_id)
+					followed_queue.put(user_id)
+
+			while (len(self.hour_likes)+self.likes_per_user < self.max_hour_likes) and \
+				(len(self.hour_follows)+1 < self.max_hour_follows):
+				user_info = self.targets_queue.get()
+				if user_info is not None:
+					target_user(user_info['user_id'])
+
+					row = (user_info['user_id'], datetime.datetime.now(), 
+							user_info['followers'], user_info['followings'], np.nan,
+							user_info['tag'], user_info['likes'])
+					self.update_target_data(row)
+
+		def unfollow_users():
+			while (len(followed_queue) >= self.max_followed) and \
+				(len(self.hour_unfollows)+1 < self.max_hour_follows):
+				user_id = followed_queue.get()
+				self.unfollow_user(user_id)
+				self.hour_unfollows.put(user_id)
+
+		followed_queue = SQLiteQueue(self.username+'/followed_users')
+		while True:
+			target_users()
+			unfollow_users()
+			sleep(15*60)
 
 	def run(self):
-		self.background_thread = threading.Thread(
-			target=self.background_unfollows_update_followbacks)
-		self.background_thread.start()
-		if self.verbosity > 0:
-			self.info_printer = threading.Thread(
-				target=self.print_info)
-			self.info_printer.start()
 
-		self.worker_threads = []
-		for i in range(self.n_jobs):
-			t = threading.Thread(
-				target=self.like_follow_users)
-			t.start()
-			self.worker_threads += [t]
+		# model data gathering and fitting
+		self.fit_model_thread = threading.Thread(
+			target=self.fit_model)
+		self.fit_model_thread.start()
+
+		# print information
+		if self.verbosity > 0:
+			self.print_info_thread = threading.Thread(
+				target=self.print_info)
+			self.print_info_thread.start()
+
+		# locate potential targets
+		self.find_targets_thread = threading.Thread(
+			target = self.find_targets)
+		self.find_targets_thread.start()
+
+		# likes, follows and unfollows
+		self.like_follow_unfollow_thread = threading.Thread(
+			target=self.like_follow_unfollow)
+		self.like_follow_unfollow_thread.start()
+
+
 
 # usage: python3 instabot.py <USERNAME>
 if __name__ == '__main__':

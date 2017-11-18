@@ -1,9 +1,8 @@
 # max_hour_likes and max_hour_follows likes/follows per hour (sliding window)
 # likes_per_user media likes for each targetted user
-# wait on average mean_wait_time seconds between API queries (on each thread)
+# wait on average mean_wait_time seconds between API queries
 # concurrently follow up to max_followed users
 # unfollow oldest followed users to maintain this number
-# will use n_jobs threads to like/follow, 1 thread to unfollow/gather followback data and 1 to print info
 # verbosity:
 #   0: nothing
 #   1: error messages, periodic likes/follows per hour
@@ -17,7 +16,6 @@ likes_per_user:   3
 mean_wait_time:   1
 max_followed:     100
 verbosity:        1
-n_jobs:           2
 tag_list:
   - hashtag
   - taghash
