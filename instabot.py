@@ -1,6 +1,6 @@
 from InstagramAPI.InstagramAPI import InstagramAPI
 from persistqueue import SQLiteQueue
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegressionCV
 from sklearn.preprocessing import LabelEncoder,OneHotEncoder
 from sklearn.exceptions import NotFittedError
 
@@ -61,7 +61,6 @@ class ModifiedInstagramAPI(InstagramAPI):
 					self.getRecentActivity()
 					print ("Login success!\n")
 					return True;
-
 
 class SlidingWindow:
 	class Item:
@@ -136,33 +135,20 @@ class PriorityQueue:
 		return item.value
 
 class InstaBot:
-	def __init__(self, username='', password='',
-		tag_list=['instagram'], 
-		max_hour_likes=1000, max_hour_follows=500,
-		likes_per_user=3,
-		mean_wait_time=1,
-		max_followed=100,
-		verbosity=1):
+	def __init__(self, directory=''):
 
-		self.username = username
-		self.password = password
-		self.tag_list = tag_list
-		self.max_hour_likes = max_hour_likes
-		self.max_hour_follows = max_hour_follows
-		self.likes_per_user = likes_per_user
-		self.mean_wait_time = mean_wait_time
-		self.max_followed = max_followed
-		self.verbosity = verbosity
+		self.directory = directory
+		self.load_settings()
 
-		self.targets_queue = PriorityQueue(self.max_hour_follows * 2)
+		self.targets_queue = PriorityQueue(self.max_hour_follows * 10)
 
-		self.hour_likes = SlidingWindow(username+'/hour_likes')
-		self.hour_follows = SlidingWindow(username+'/hour_follows')
-		self.hour_unfollows = SlidingWindow(username+'/hour_unfollows')
+		self.hour_likes = SlidingWindow(self.directory+'/hour_likes')
+		self.hour_follows = SlidingWindow(self.directory+'/hour_follows')
+		self.hour_unfollows = SlidingWindow(self.directory+'/hour_unfollows')
 
-		self.target_data_path = username+'/target_data/data.pkl'
-		if not os.path.exists(username+'/target_data'):
-			os.makedirs(username+'/target_data')
+		self.target_data_path = self.directory+'/target_data/data.pkl'
+		if not os.path.exists(self.directory+'/target_data'):
+			os.makedirs(self.directory+'/target_data')
 		try: 
 			self.target_data = pickle.load(open(self.target_data_path,'rb'))
 		except Exception as e:
@@ -171,12 +157,31 @@ class InstaBot:
 
 		self.target_data_lock = threading.Lock()
 
-		self.model = LogisticRegression(solver='sag',warm_start=True)
+		self.model = LogisticRegressionCV()
 
 		self.api_lock = threading.Lock()
 
-		self.api = ModifiedInstagramAPI(username, password)
+		self.api = ModifiedInstagramAPI(self.username, self.password)
 		self.api.login()
+
+	def load_settings(self):
+		settings = yaml.load(open(self.directory+'/settings.yml','r'))
+		for k,v in settings.items():
+			setattr(self, k, v)
+		self.set_verbosity()
+
+	def set_verbosity(self):
+		self.print_errors = False
+		self.print_info = False
+		self.print_thread_activity = False
+		self.print_api_requests = False
+		if self.verbosity >= 1:
+			self.print_info = True
+		if self.verbosity >= 2:
+			self.print_thread_activity = True
+			self.print_errors = True
+		if self.verbosity >= 3:
+			self.print_api_requests = True
 
 	def wait(self):
 		t = np.random.exponential(self.mean_wait_time)
@@ -188,26 +193,36 @@ class InstaBot:
 		self.api_lock.acquire()
 		self.wait()
 		ret = None
-		if self.verbosity > 1:
+		if self.print_api_requests:
 			print(request.__name__, args, kwargs)
 		try:
 			response = request(*args, **kwargs)
 			if response.status_code == 200:
 				ret = json.loads(response.text)
 			else:
-				if self.verbosity > 0:
+				if self.print_errors:
 					print("HTTP", response.status_code)
-					print(response)
-					if self.verbosity > 1:
-						print(response.text)
+					print("Response:",response)
+					print("Text:",response.text)
+					try:
+						print("Json:",json.loads(response.text))
+					except:
+						print("Couldn't load Json")
 				if response.status_code in [400, 429]:
-					if json.loads(response.text)['spam']:
-						if self.verbosity > 0:
-							print("Spam Detected, sleep 1 hour")
-						sleep(60*60)
+					try:
+						if json.loads(response.text)['spam']:
+							if self.print_errors:
+								print("Spam Detected, sleep 30 min")
+							sleep(30*60)
+					except:
+						if self.print_errors:
+							print("Not spam; possible rate limiting")
+							print("Sleep 5min")
+						sleep(5*60)
+
 		except Exception as e:
-			if self.verbosity > 0:
-				print(e)
+			if self.print_errors:
+				print("Exception:",e)
 		self.api_lock.release()
 		return ret
 
@@ -221,16 +236,16 @@ class InstaBot:
 		return self.send_request(self.api.follow, user_id)
 	def unfollow_user(self, user_id):
 		return self.send_request(self.api.unfollow, user_id)
-	def get_user_followers(self, user_id):
-		ret = self.send_request(self.api.getUserFollowers, user_id)
-		if ret is None:  return 0
-		return len(ret['users'])
-	def get_user_followings(self, user_id):
-		ret = self.send_request(self.api.getUserFollowings, user_id)
-		if ret is None: return 0
-		return len(ret['users'])
-	def followed_by(self, user_id):
+	def get_user_info(self, user_id):
+		ret = self.send_request(self.api.getUsernameInfo, user_id)
+		if ret is None: return None
+		return ret['user']
+	def get_friendship_info(self, user_id):
 		ret = self.send_request(self.api.userFriendship, user_id)
+		if ret is None: return None
+		return ret
+	def followed_by(self, user_id):
+		ret = self.get_friendship_info(user_id)
 		try: 
 			return ret['followed_by']
 		except:
@@ -240,14 +255,11 @@ class InstaBot:
 		pickle.dump(self.target_data, open(self.target_data_path,'wb'), protocol=2)
 
 	def update_target_data(self, row):
-		#self.target_data_lock.acquire()
 		if row[list(self.target_data.columns).index('user_id')] in self.target_data['user_id']:
 			self.target_data.loc[self.target_data['user_id']==user_id,:] = row
 		else:
 			row = pd.Series(row, index=self.target_data.columns)
 			self.target_data = self.target_data.append(row, ignore_index=True)
-		self.save_target_data()
-		#self.target_data_lock.release()
 
 	def one_hot_encode_tags(self, tags):
 		tags = np.array(tags).reshape(-1)
@@ -258,13 +270,29 @@ class InstaBot:
 		one_hot_tags = np.eye(len(self.tag_list)+1)[tags]
 		return one_hot_tags
 
+	def valid_target(self, user_id):
+		friendship_info = self.get_friendship_info(user_id)
+		try:
+			return not(friendship_info['blocking'] or \
+				friendship_info['followed_by'] or \
+				friendship_info['following'] or \
+				friendship_info['incoming_request'] or \
+				friendship_info['outgoing_request'] or \
+				friendship_info['is_private'])
+		except:
+			return False
+
+	def get_following_follower_counts(self, user_id):
+		user_info = self.get_user_info(user_id)
+		if user_info is None: return (-1,-1)
+		return (user_info['follower_count'], user_info['following_count'])
+
 	# # # # # # # # # # 
 	# Bot Workers
 	# # # # # # # # # # 
-	def fit_model(self):
+	def model_fitter(self):
 
 		def update_follow_backs():
-			#self.target_data_lock.acquire()
 			to_update = self.target_data.loc[
 				(datetime.datetime.now()-self.target_data['timestamp'] > datetime.timedelta(days=1)) &
 				pd.isnull(self.target_data['follow_back'])]
@@ -273,9 +301,6 @@ class InstaBot:
 				user_id = row['user_id']
 				follow_back = self.followed_by(user_id)
 				self.target_data.loc[index, 'follow_back'] = follow_back
-			if len(to_update) > 0:
-				self.save_target_data()
-			#self.target_data_lock.release()
 
 		def update_model():
 
@@ -294,24 +319,58 @@ class InstaBot:
 				self.model.fit(X,y)
 
 		while True:
+			if self.print_thread_activity:
+				print("fit_model: update_model")
 			update_model()
+			if self.print_thread_activity:
+				print("fit_model: update_follow_backs")
 			update_follow_backs()
-			sleep(15*60)
+			if self.print_thread_activity:
+				print("fit_model: save_target_data")
+			self.save_target_data()
+			if self.print_thread_activity:
+				print("fit_model: sleep")
+			sleep(60*60)
 
-	def print_info(self):
-		followed_queue = SQLiteQueue(self.username+'/followed_users')
+	def info_printer(self):
+		followed_queue = SQLiteQueue(self.directory+'/followed_users')
 		while True:
-			if self.verbosity > 0:
+			if self.print_info:
 				print(datetime.datetime.now().strftime('%x %X'))
-				print("\tFollowed Users   :", len(followed_queue))
-				print("\tHour Likes       :", len(self.hour_likes))
-				print("\tHour Follows     :", len(self.hour_follows))
-				print("\tHour Unfollows   :", len(self.hour_unfollows))
-				print("\tTargets Queue Len:", len(self.targets_queue))
-				print("\tTargets Queue Max:", max([0]+[i.priority for i in self.targets_queue.items]))
+				print("  Followed Users:", len(followed_queue))
+				print("  Hour Likes    :", len(self.hour_likes))
+				print("  Hour Follows  :", len(self.hour_follows))
+				print("  Hour Unfollows:", len(self.hour_unfollows))
+				print("  Targets Queue:")
+				print("    Total Len:", len(self.targets_queue))
+				try:
+					priorities = sorted([i.priority for i in self.targets_queue.items], reverse=True)
+					qs = np.percentile(priorities[:int(self.max_hour_follows)], [100,50,0])
+					print("    Top-"+str(self.max_hour_follows)+" Max-Med-Min:", 
+						['{0:.2f}'.format(x) for x in qs])
+				except:
+					pass
+				try:
+					if False:
+						print("  Model Coefficients:")
+						print("    Intercept Odds Ratio:", 
+							'{0:.2e}'.format(np.exp(self.model.intercept_[0])))
+						print("    Coefficient Odds Ratios:")
+						l = ['followers','followings'] + self.tag_list
+						for tag,coef in zip(l, self.model.coef_[0][2:]):
+							print("      "+tag.rjust(len(max(l, key=len)))+": 1"+\
+								'{0:+.1e}'.format(np.exp(coef)-1))
+				except: 
+					pass
+				print("  Thread Alive:")
+				print("    fit_model           :", self.fit_model_thread.is_alive())
+				print("    find_targets        :", self.find_targets_thread.is_alive())
+				print("    like_follow_unfollow:", self.like_follow_unfollow_thread.is_alive())
+				print("  Refresh settings")
+				self.load_settings()
 			sleep(15*60)
 
-	def find_targets(self):
+	def target_finder(self):
 
 		def select_tag():
 			return random.choice(self.tag_list)
@@ -329,32 +388,87 @@ class InstaBot:
 			return followback_confidence
 
 		# build up self.targets_queue
+
+		# target user based
+		if hasattr(self, 'target_user_list') and self.target_user_list is not None:
+			if self.print_thread_activity:
+				print("find_targets: user based")
+			for target_username in self.target_user_list:
+
+				if self.print_thread_activity:
+					print("find_targets:", target_username)
+					print("find_targets: searchUsername")
+				target_user_info = self.send_request(self.api.searchUsername, target_username)
+				if target_user_info is not None:
+					target_user_id = target_user_info['user']['pk']
+					if self.print_thread_activity:
+						print("find_targets: getUserFollowers")
+					follower_list = self.send_request(self.api.getUserFollowers, target_user_id)
+
+					if follower_list is not None:
+						for user_info in follower_list['users']:
+
+							user_id = user_info['pk']
+
+							while self.targets_queue.is_full():
+								print("find_targets: sleep")
+								sleep(15*60)
+
+							if self.print_thread_activity:
+								print("find_targets: valid_target")
+							if self.valid_target(user_id):
+
+								user_info = {
+									'user_id':user_id,
+									'followers':-1,
+									'followings':-1,
+									'likes':-1,
+									'tag':'',
+									'discovery_time':datetime.datetime.now()}
+
+								if self.print_thread_activity:
+									print("find_targets: add target")
+								self.targets_queue.put(user_info, 1)
+
+		# hashtag based
+		if self.print_thread_activity:
+			print("find_targets: hashtag based")
 		while True:
 			for _ in range(self.max_hour_follows):
+				if self.print_thread_activity:
+					print("find_targets: select_tag")
 				tag = select_tag()
 				items = self.get_tag_feed(tag)
 				if items is None:
-					if self.verbosity > 1:
-						print("Tag Feed 404")
+					if self.print_errors:
+						print("find_targets: Tag Feed 404")
 				else:
 					for i,item in enumerate(items['items']):
-						if i>5 or self.targets_queue.is_full(): break
+						if i>=5: break
 
 						user_id = item['user']['pk']
-						user_followers = self.get_user_followers(user_id)
-						user_followings = self.get_user_followings(user_id)
+						if self.valid_target(user_id):
 
-						user_info = {
-							'user_id':user_id,
-							'followers':user_followers,
-							'followings':user_followings,
-							'likes':item['like_count'],
-							'tag':tag,
-							'discovery_time':datetime.datetime.now()}
+							if self.print_thread_activity:
+								print("find_targets: get_following_follower_counts")
+							user_followers, user_followings = \
+								self.get_following_follower_counts(user_id)
 
-						followback_confidence = get_followback_confidence(user_info)
+							user_info = {
+								'user_id':user_id,
+								'followers':user_followers,
+								'followings':user_followings,
+								'likes':item['like_count'],
+								'tag':tag,
+								'discovery_time':datetime.datetime.now()}
 
-						self.targets_queue.put(user_info, followback_confidence)
+							if self.print_thread_activity:
+								print("find_targets: get_followback_confidence")
+							followback_confidence = get_followback_confidence(user_info)
+
+							self.targets_queue.put(user_info, followback_confidence)
+			if self.print_thread_activity:
+				print("find_targets: sleep")
 			sleep(15*60)
 
 	def like_follow_unfollow(self):
@@ -362,11 +476,9 @@ class InstaBot:
 		def target_users():
 
 			def target_user(user_id):
-				if self.verbosity > 1:
-					print("Targetting user", user_id)
 				items = self.get_user_feed(user_id)
 				if items is None: 
-					if self.verbosity > 1:
+					if self.print_errors:
 						print("User Feed 404")
 					return
 
@@ -378,55 +490,71 @@ class InstaBot:
 						media_id = item['pk']
 
 						if not(item['has_liked']):
+							if self.print_thread_activity:
+								print("like_follow_unfollow: target_users: target_user: like")
 							self.like_media(media_id)
+							if self.print_thread_activity:
+								print("like_follow_unfollow: target_users: target_user: like_put")
 							self.hour_likes.put(media_id)
 
 				# follow
 				if self.max_hour_follows > 0 and self.max_followed > 0:
+					if self.print_thread_activity:
+						print("like_follow_unfollow: target_users: target_user: follow")
 					self.follow_user(user_id)
+					if self.print_thread_activity:
+						print("like_follow_unfollow: target_users: target_user: follow_put")
 					self.hour_follows.put(user_id)
 					followed_queue.put(user_id)
 
-			while (len(self.hour_likes)+self.likes_per_user < self.max_hour_likes) and \
-				(len(self.hour_follows)+1 < self.max_hour_follows):
+			while (len(self.hour_likes)+self.likes_per_user <= self.max_hour_likes) and \
+				(len(self.hour_follows) < self.max_hour_follows):
 				user_info = self.targets_queue.get()
 				if user_info is not None:
-					target_user(user_info['user_id'])
+					user_id = user_info['user_id']
+					if self.valid_target(user_id):
 
-					row = (user_info['user_id'], datetime.datetime.now(), 
-							user_info['followers'], user_info['followings'], np.nan,
-							user_info['tag'], user_info['likes'])
-					self.update_target_data(row)
+						if self.print_thread_activity:
+							print("like_follow_unfollow: target_users: target_user")
+						target_user(user_info['user_id'])
+
+						if user_info['followers'] != -1 and \
+							user_info['followings'] != -1:
+							row = (user_info['user_id'], datetime.datetime.now(), 
+									user_info['followers'], user_info['followings'], np.nan,
+									user_info['tag'], user_info['likes'])
+							self.update_target_data(row)
 
 		def unfollow_users():
-			while (len(followed_queue) >= self.max_followed) and \
-				(len(self.hour_unfollows)+1 < self.max_hour_follows):
+			while (len(followed_queue) > self.max_followed) and \
+				(len(self.hour_unfollows) < self.max_hour_follows):
 				user_id = followed_queue.get()
+				print("like_follow_unfollow: unfollow_users: unfollow")
 				self.unfollow_user(user_id)
 				self.hour_unfollows.put(user_id)
 
-		followed_queue = SQLiteQueue(self.username+'/followed_users')
+		followed_queue = SQLiteQueue(self.directory+'/followed_users')
 		while True:
+			if self.print_thread_activity:
+				print("like_follow_unfollow: target_users")
 			target_users()
+			if self.print_thread_activity:
+				print("like_follow_unfollow: unfollow_users")
 			unfollow_users()
-			sleep(15*60)
+			if self.print_thread_activity:
+				print("like_follow_unfollow: sleep")
+			sleep(5*60)
 
 	def run(self):
 
 		# model data gathering and fitting
 		self.fit_model_thread = threading.Thread(
-			target=self.fit_model)
+			target=self.model_fitter)
 		self.fit_model_thread.start()
-
-		# print information
-		if self.verbosity > 0:
-			self.print_info_thread = threading.Thread(
-				target=self.print_info)
-			self.print_info_thread.start()
 
 		# locate potential targets
 		self.find_targets_thread = threading.Thread(
-			target = self.find_targets)
+			target = self.target_finder)
 		self.find_targets_thread.start()
 
 		# likes, follows and unfollows
@@ -434,14 +562,15 @@ class InstaBot:
 			target=self.like_follow_unfollow)
 		self.like_follow_unfollow_thread.start()
 
+		# print information
+		if self.verbosity > 0:
+			self.print_info_thread = threading.Thread(
+				target=self.info_printer)
+			self.print_info_thread.start()
 
 
 # usage: python3 instabot.py <USERNAME>
 if __name__ == '__main__':
 	username = sys.argv[1]
-	try:
-		settings = yaml.load(open(username+'/settings.yml','r'))
-	except Exception as e:
-		settings = {}
-	bot = InstaBot(**settings)
+	bot = InstaBot(username)
 	bot.run()

@@ -3,12 +3,13 @@
 # wait on average mean_wait_time seconds between API queries
 # concurrently follow up to max_followed users
 # unfollow oldest followed users to maintain this number
+# having a target_users_list will cause bot to first target the given users' followers before going on to hashtags
 # verbosity:
 #   0: nothing
 #   1: error messages, periodic likes/follows per hour
 #   2: requests send
 #   3: sleep time
-username:         example # should match directory file is in
+username:         example
 password:         password
 max_hour_likes:   40
 max_hour_follows: 20
@@ -16,6 +17,10 @@ likes_per_user:   3
 mean_wait_time:   1
 max_followed:     100
 verbosity:        1
+target_users_list:
+  - username1
+  - username2
+  - username3
 tag_list:
   - hashtag
   - taghash
