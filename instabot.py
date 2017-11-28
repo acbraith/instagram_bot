@@ -261,13 +261,14 @@ class InstaBot:
 			row = pd.Series(row, index=self.target_data.columns)
 			self.target_data = self.target_data.append(row, ignore_index=True)
 
-	def one_hot_encode_tags(self, tags):
+	def one_hot_encode(self, tags):
 		tags = np.array(tags).reshape(-1)
+		tags_users_list = self.tag_list + self.target_user_list
 		def tag_idx(tag):
-			if tag in self.tag_list: return self.tag_list.index(tag)
-			return len(self.tag_list)
+			if tag in tags_users_list: return tags_users_list.index(tag)
+			return len(tags_users_list)
 		tags = [tag_idx(t) for t in tags]
-		one_hot_tags = np.eye(len(self.tag_list)+1)[tags]
+		one_hot_tags = np.eye(len(tags_users_list)+1)[tags]
 		return one_hot_tags
 
 	def valid_target(self, user_id):
@@ -309,7 +310,7 @@ class InstaBot:
 					~pd.isnull(self.target_data['follow_back'])]
 				X = useful_data[['followers','followings']].as_matrix()
 				tags = useful_data[['tag']].as_matrix()
-				tags = self.one_hot_encode_tags(tags)
+				tags = self.one_hot_encode(tags)
 				X = np.append(X, tags, axis=1)
 				y = useful_data['follow_back'].as_matrix().astype(int)
 				return X,y
@@ -374,11 +375,13 @@ class InstaBot:
 
 		def select_tag():
 			return random.choice(self.tag_list)
+		def select_target_username():
+			return random.choice(target_user_iterators)
 
 		def get_followback_confidence(user_info):
 			x = [user_info['followers'], user_info['followings']]
 			x = np.reshape(x,(1,-1))
-			tag = self.one_hot_encode_tags([user_info['tag']])
+			tag = self.one_hot_encode([user_info['tag']])
 			x = np.append(x, tag, axis=1)
 			try:
 				followback_confidence = \
@@ -387,8 +390,77 @@ class InstaBot:
 				followback_confidence = 1
 			return followback_confidence
 
-		# build up self.targets_queue
+		# create iterators for each target user
+		target_user_iterators = []
+		for username in self.target_user_list:
+			print("find_targets: create_user_iterator")
+			try:
+				user_info = self.send_request(self.api.searchUsername, username)
+				user_id = user_info['user']['pk']
+				follower_list = self.send_request(self.api.getUserFollowers, user_id)
+				user_ids = [user['pk'] for user in follower_list['users']]
+				iterator = iter(user_ids)
+				target_user_iterators += [(iterator, username)]
+			except Exception as e:
+				if self.print_errors:
+					print(e)
 
+		# build up self.targets_queue
+		while True:
+			for _ in range(self.max_hour_follows):
+				try:
+					# select target_user_list or tag_list
+					if len(target_user_iterators) == 0 or np.random.rand() < 0.0:
+						# get user_ids from tag feed
+						if self.print_thread_activity:
+							print("find_targets: select_tag")
+						tag = select_tag()
+						items = self.get_tag_feed(tag)
+						#if items is None:
+						#	if self.print_errors:
+						#		print("find_targets: Tag Feed 404")
+						user_ids = [item['user']['pk'] for item in items['items']]
+					else:
+						# get user_ids from target user followers
+						if self.print_thread_activity:
+							print("find_targets: select_target_username")
+						idx = np.random.randint(0,len(target_user_iterators))
+						user_ids, tag = target_user_iterators[idx]
+						if not(any(tag)):
+							del target_user_iterators[idx]
+							raise Exception("find_targets: user_ids iterator empty")
+
+					# iterate over user_ids
+					for i,user_id in enumerate(user_ids):
+						if i >= 5: break
+						if self.print_thread_activity:
+							print("find_targets: valid_target")
+						if self.valid_target(user_id):
+							if self.print_thread_activity:
+								print("find_targets: get_following_follower_counts")
+							user_followers, user_followings = \
+								self.get_following_follower_counts(user_id)
+
+							user_info = {
+								'user_id':user_id,
+								'followers':user_followers,
+								'followings':user_followings,
+								'likes':0,
+								'tag':tag,
+								'discovery_time':datetime.datetime.now()}
+
+							if self.print_thread_activity:
+								print("find_targets: get_followback_confidence")
+							followback_confidence = get_followback_confidence(user_info)
+
+							self.targets_queue.put(user_info, followback_confidence)
+				except Exception as e:
+					if self.print_errors:
+						print(e)
+			if self.print_thread_activity:
+				print("find_targets: sleep")
+			sleep(15*60)
+		'''
 		# target user based
 		if hasattr(self, 'target_user_list') and self.target_user_list is not None:
 			if self.print_thread_activity:
@@ -418,17 +490,26 @@ class InstaBot:
 								print("find_targets: valid_target")
 							if self.valid_target(user_id):
 
+								if self.print_thread_activity:
+									print("find_targets: get_following_follower_counts")
+								user_followers, user_followings = \
+									self.get_following_follower_counts(user_id)
+
 								user_info = {
 									'user_id':user_id,
-									'followers':-1,
-									'followings':-1,
-									'likes':-1,
-									'tag':'',
+									'followers':user_followers,
+									'followings':user_followings,
+									'likes':0,
+									'tag':target_username,
 									'discovery_time':datetime.datetime.now()}
 
 								if self.print_thread_activity:
+									print("find_targets: get_followback_confidence")
+								followback_confidence = get_followback_confidence(user_info)
+
+								if self.print_thread_activity:
 									print("find_targets: add target")
-								self.targets_queue.put(user_info, 1)
+								self.targets_queue.put(user_info, followback_confidence)
 
 		# hashtag based
 		if self.print_thread_activity:
@@ -470,6 +551,7 @@ class InstaBot:
 			if self.print_thread_activity:
 				print("find_targets: sleep")
 			sleep(15*60)
+		'''
 
 	def like_follow_unfollow(self):
 
