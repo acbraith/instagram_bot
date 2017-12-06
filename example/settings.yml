@@ -3,11 +3,6 @@
 # wait on average mean_wait_time seconds between API queries
 # concurrently follow up to max_followed users
 # unfollow oldest followed users to maintain this number
-# verbosity:
-#   0: nothing
-#   1: error messages, periodic likes/follows per hour
-#   2: requests send
-#   3: sleep time
 username:         example
 password:         password
 max_hour_follows: 30
