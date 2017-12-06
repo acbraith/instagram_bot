@@ -185,9 +185,9 @@ class InstaBot:
 			if response.status_code == 200:
 				ret = json.loads(response.text)
 			else:
-				logging.warning("send_request; HTTP "+str(response.status_code))
 				logging.warning("send_request; Response:  "+str(response))
-				logging.warning("send_request; Response text:  "+str(response.text))
+				if response.status_code != 404:
+					logging.warning("send_request; Response text:  "+str(response.text))
 				if response.status_code in [400, 429]:
 					try:
 						if json.loads(response.text)['spam']:
@@ -446,9 +446,10 @@ class InstaBot:
 					return
 
 				# like
-				if self.max_hour_likes > 0:
+				if self.likes_per_user > 0:
 					for i,item in enumerate(items['items']):
-						if i >= self.likes_per_user: break
+						if len(self.hour_likes) >= self.likes_per_user * (len(self.hour_follows)+1):
+							break
 
 						media_id = item['pk']
 
@@ -464,8 +465,7 @@ class InstaBot:
 					self.hour_follows.put(user_id)
 					followed_queue.put(user_id)
 
-			while (len(self.hour_likes)+self.likes_per_user <= self.max_hour_likes) and \
-				(len(self.hour_follows) < self.max_hour_follows):
+			while len(self.hour_follows) < self.max_hour_follows:
 				user_info = self.targets_queue.get()
 				if user_info is not None:
 					user_id = user_info['user_id']
@@ -486,7 +486,10 @@ class InstaBot:
 				(len(self.hour_unfollows) < self.max_hour_follows):
 				user_id = followed_queue.get()
 				logging.info("like_follow_unfollow: unfollow_users: unfollow")
-				self.unfollow_user(user_id)
+				ret = self.unfollow_user(user_id)
+				if ret is None: 
+					logging.info("like_follow_unfollow: unfollow_users: unfollow fail")
+					followed_queue.put(user_id)
 				self.hour_unfollows.put(user_id)
 
 		followed_queue = SQLiteQueue(self.directory+'/followed_users')
@@ -516,10 +519,9 @@ class InstaBot:
 		self.like_follow_unfollow_thread.start()
 
 		# print information
-		if self.verbosity > 0:
-			self.print_info_thread = threading.Thread(
-				target=self.info_printer)
-			self.print_info_thread.start()
+		self.print_info_thread = threading.Thread(
+			target=self.info_printer)
+		self.print_info_thread.start()
 
 
 # usage: python3 instabot.py <USERNAME>
@@ -527,7 +529,7 @@ if __name__ == '__main__':
 
 	username = sys.argv[1]
 
-	loglevel = 'info'
+	loglevel = 'warning'
 	numeric_level = getattr(logging, loglevel.upper(), None)
 	if not isinstance(numeric_level, int):
 		raise ValueError('Invalid log level: %s' % loglevel)
