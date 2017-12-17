@@ -1,15 +1,21 @@
 from InstagramAPI.InstagramAPI import InstagramAPI
 from persistqueue import SQLiteQueue
-from sklearn.linear_model import LogisticRegressionCV
+
 from sklearn.preprocessing import LabelEncoder,OneHotEncoder
 from sklearn.exceptions import NotFittedError
+from sklearn.model_selection import cross_val_score
+
+from sklearn.linear_model import LogisticRegressionCV
+from sklearn.ensemble import RandomForestClassifier
 
 from time import sleep
+from copy import deepcopy
 import threading
 import random, pprint, requests, datetime, sys, pickle, os, yaml, json, logging
 import numpy as np
 import pandas as pd
 import pymc3 as pm
+import xgboost as xgb
 
 # modify API slightly so we can multithread properly
 # breaks configureTimelineAlbum, direct_share, 
@@ -296,11 +302,16 @@ class InstaBot:
 
 			X,y = get_model_data()
 			if len(np.unique(y)) > 1:
-				self.model.fit(X,y)
+				m = deepcopy(self.model)
+				m.fit(X,y)
+				self.model = m
+				return cross_val_score(m, X, y, n_jobs=1).mean()
+			return 0
 
 		while True:
 			logging.info("fit_model: update_model")
-			update_model()
+			score = update_model()
+			logging.info("fit_model: cross_val_score "+'{0:.3f}'.format(score))
 			logging.info("fit_model: update_follow_backs")
 			update_follow_backs()
 			logging.info("fit_model: save_target_data")
@@ -360,7 +371,8 @@ class InstaBot:
 			try:
 				followback_confidence = \
 					self.model.predict_proba(x)[0,list(self.model.classes_).index(1)]
-			except NotFittedError:
+			except (NotFittedError, xgb.core.XGBoostError):
+				logging.warning("get_followback_confidence, model not fitted")
 				followback_confidence = 1
 			return followback_confidence
 
@@ -483,7 +495,7 @@ class InstaBot:
 
 		def unfollow_users():
 			while (len(followed_queue) > self.max_followed) and \
-				(len(self.hour_unfollows) < self.max_hour_follows):
+				(len(self.hour_unfollows) < self.max_hour_follows*1.1):
 				user_id = followed_queue.get()
 				logging.info("like_follow_unfollow: unfollow_users: unfollow")
 				ret = self.unfollow_user(user_id)
@@ -530,6 +542,7 @@ if __name__ == '__main__':
 	username = sys.argv[1]
 
 	loglevel = 'warning'
+	#loglevel = 'info'
 	numeric_level = getattr(logging, loglevel.upper(), None)
 	if not isinstance(numeric_level, int):
 		raise ValueError('Invalid log level: %s' % loglevel)
