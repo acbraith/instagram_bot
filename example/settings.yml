@@ -1,11 +1,12 @@
 # max_hour_follows follows per hour (sliding window)
 # likes_per_user media likes for each targetted user
+	# careful with going too fast; IG can block you for a while
 # wait on average mean_wait_time seconds between API queries
 # concurrently follow up to max_followed users
 # unfollow oldest followed users to maintain this number
 username:         example
 password:         password
-max_hour_follows: 30
+max_hour_follows: 20
 likes_per_user:   3
 mean_wait_time:   1
 max_followed:     100
