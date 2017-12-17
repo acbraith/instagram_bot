@@ -3,19 +3,15 @@ from persistqueue import SQLiteQueue
 
 from sklearn.preprocessing import LabelEncoder,OneHotEncoder
 from sklearn.exceptions import NotFittedError
-from sklearn.model_selection import cross_val_score
 
 from sklearn.linear_model import LogisticRegressionCV
-from sklearn.ensemble import RandomForestClassifier
 
 from time import sleep
 from copy import deepcopy
 import threading
-import random, pprint, requests, datetime, sys, pickle, os, yaml, json, logging
+import random, requests, datetime, sys, pickle, os, yaml, json, logging
 import numpy as np
 import pandas as pd
-import pymc3 as pm
-import xgboost as xgb
 
 # modify API slightly so we can multithread properly
 # breaks configureTimelineAlbum, direct_share, 
