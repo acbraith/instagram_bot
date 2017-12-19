@@ -13,6 +13,8 @@ import random, requests, datetime, sys, pickle, os, yaml, json, logging
 import numpy as np
 import pandas as pd
 
+LOGGER = logging.getLogger('instabot')
+
 # modify API slightly so we can multithread properly
 # breaks configureTimelineAlbum, direct_share, 
 # getTotalFollowers, getTotalFollowings, getTotalUserFeed, getTotalLikedMedia
@@ -179,28 +181,28 @@ class InstaBot:
 		self.api_lock.acquire()
 		self.wait()
 		ret = None
-		logging.debug("send_request; Reguest: "+request.__name__)
-		logging.debug("send_request; args: "+str(args))
-		logging.debug("send_request; kwargs: "+str(kwargs))
+		LOGGER.debug("send_request; Reguest: "+request.__name__)
+		LOGGER.debug("send_request; args: "+str(args))
+		LOGGER.debug("send_request; kwargs: "+str(kwargs))
 		try:
 			response = request(*args, **kwargs)
 			if response.status_code == 200:
 				ret = json.loads(response.text)
 			else:
-				logging.warning("send_request; Response:  "+str(response))
+				LOGGER.warning("send_request; Response:  "+str(response))
 				if response.status_code != 404:
-					logging.warning("send_request; Response text:  "+str(response.text))
+					LOGGER.warning("send_request; Response text:  "+str(response.text))
 				if response.status_code in [400, 429]:
 					try:
 						if json.loads(response.text)['spam']:
-							logging.warning("send_request; Spam Detected")
+							LOGGER.warning("send_request; Spam Detected")
 							sleep(30*60)
 					except:
-						logging.warning("send_request; Possible Rate Limiting Detected")
+						LOGGER.warning("send_request; Possible Rate Limiting Detected")
 						sleep(5*60)
 
 		except Exception as e:
-			logging.error("send_request; Exception: "+str(e))
+			LOGGER.error("send_request; Exception: "+str(e))
 		self.api_lock.release()
 		return ret
 
@@ -301,18 +303,18 @@ class InstaBot:
 				m = deepcopy(self.model)
 				m.fit(X,y)
 				self.model = m
-				return cross_val_score(m, X, y, n_jobs=1).mean()
+				#return cross_val_score(m, X, y, n_jobs=1).mean()
 			return 0
 
 		while True:
-			logging.info("fit_model: update_model")
+			LOGGER.info("fit_model: update_model")
 			score = update_model()
-			logging.info("fit_model: cross_val_score "+'{0:.3f}'.format(score))
-			logging.info("fit_model: update_follow_backs")
+			#LOGGER.info("fit_model: cross_val_score "+'{0:.3f}'.format(score))
+			LOGGER.info("fit_model: update_follow_backs")
 			update_follow_backs()
-			logging.info("fit_model: save_target_data")
+			LOGGER.info("fit_model: save_target_data")
 			self.save_target_data()
-			logging.info("fit_model: sleep")
+			LOGGER.info("fit_model: sleep")
 			sleep(60*60)
 
 	def info_printer(self):
@@ -368,7 +370,7 @@ class InstaBot:
 				followback_confidence = \
 					self.model.predict_proba(x)[0,list(self.model.classes_).index(1)]
 			except (NotFittedError, xgb.core.XGBoostError):
-				logging.warning("get_followback_confidence, model not fitted")
+				LOGGER.warning("get_followback_confidence, model not fitted")
 				followback_confidence = 1
 			return followback_confidence
 
@@ -376,7 +378,7 @@ class InstaBot:
 		target_user_iterators = []
 		try:
 			for username in self.target_user_list:
-				logging.info("find_targets: create_user_iterator")
+				LOGGER.info("find_targets: create_user_iterator")
 				try:
 					user_info = self.send_request(self.api.searchUsername, username)
 					user_id = user_info['user']['pk']
@@ -385,9 +387,9 @@ class InstaBot:
 					iterator = iter(user_ids)
 					target_user_iterators += [(iterator, username)]
 				except Exception as e:
-					logging.error("find_targets, create_user_iterator; Exception: "+str(e))
+					LOGGER.error("find_targets, create_user_iterator; Exception: "+str(e))
 		except Exception as e:
-			logging.error("find_targets, create_user_iterators; Exception: "+str(e))
+			LOGGER.error("find_targets, create_user_iterators; Exception: "+str(e))
 
 		# build up self.targets_queue
 		while True:
@@ -396,13 +398,13 @@ class InstaBot:
 					# select target_user_list or tag_list
 					if len(target_user_iterators) == 0 or np.random.rand() < 0.5:
 						# get user_ids from tag feed
-						logging.info("find_targets: select_tag")
+						LOGGER.info("find_targets: select_tag")
 						tag = select_tag()
 						items = self.get_tag_feed(tag)
 						user_ids = [item['user']['pk'] for item in items['items']]
 					else:
 						# get user_ids from target user followers
-						logging.info("find_targets: select_target_username")
+						LOGGER.info("find_targets: select_target_username")
 						idx = np.random.randint(0,len(target_user_iterators))
 						user_ids, tag = target_user_iterators[idx]
 						if not(any(tag)):
@@ -412,9 +414,9 @@ class InstaBot:
 					# iterate over user_ids
 					for i,user_id in enumerate(user_ids):
 						if i >= 5: break
-						logging.info("find_targets: valid_target")
+						LOGGER.info("find_targets: valid_target")
 						if self.valid_target(user_id):
-							logging.info("find_targets: get_following_follower_counts")
+							LOGGER.info("find_targets: get_following_follower_counts")
 							user_followers, user_followings = \
 								self.get_following_follower_counts(user_id)
 
@@ -426,7 +428,7 @@ class InstaBot:
 								'tag':tag,
 								'discovery_time':datetime.datetime.now()}
 
-							logging.info("find_targets: get_followback_confidence")
+							LOGGER.info("find_targets: get_followback_confidence")
 							followback_confidence = get_followback_confidence(user_info)
 
 							# pseudo epsilon greedy strategy
@@ -434,13 +436,13 @@ class InstaBot:
 							# explore ~20 targets for every 1 real target
 							epsilon = 0.1/20
 							if np.random.rand() < epsilon:
-								logging.info("find_targets: mark target for exploration")
+								LOGGER.info("find_targets: mark target for exploration")
 								followback_confidence = 1
 
 							self.targets_queue.put(user_info, followback_confidence)
 				except Exception as e:
-					logging.error("find_targets; Exception: "+str(e))
-			logging.info("find_targets: sleep")
+					LOGGER.error("find_targets; Exception: "+str(e))
+			LOGGER.info("find_targets: sleep")
 			sleep(15*60)
 
 	def like_follow_unfollow(self):
@@ -450,7 +452,7 @@ class InstaBot:
 			def target_user(user_id):
 				items = self.get_user_feed(user_id)
 				if items is None: 
-					logging.warning("like_follow_unfollow: target_users: target_user: user feed 404")
+					LOGGER.warning("like_follow_unfollow: target_users: target_user: user feed 404")
 					return
 
 				# like
@@ -462,13 +464,13 @@ class InstaBot:
 						media_id = item['pk']
 
 						if not(item['has_liked']):
-							logging.info("like_follow_unfollow: target_users: target_user: like")
+							LOGGER.info("like_follow_unfollow: target_users: target_user: like")
 							self.like_media(media_id)
 							self.hour_likes.put(media_id)
 
 				# follow
 				if self.max_hour_follows > 0 and self.max_followed > 0:
-					logging.info("like_follow_unfollow: target_users: target_user: follow")
+					LOGGER.info("like_follow_unfollow: target_users: target_user: follow")
 					self.follow_user(user_id)
 					self.hour_follows.put(user_id)
 					followed_queue.put(user_id)
@@ -479,7 +481,7 @@ class InstaBot:
 					user_id = user_info['user_id']
 					if self.valid_target(user_id):
 
-						logging.info("like_follow_unfollow: target_users: target_user")
+						LOGGER.info("like_follow_unfollow: target_users: target_user")
 						target_user(user_info['user_id'])
 
 						if user_info['followers'] != -1 and \
@@ -493,20 +495,20 @@ class InstaBot:
 			while (len(followed_queue) > self.max_followed) and \
 				(len(self.hour_unfollows) < self.max_hour_follows*1.1):
 				user_id = followed_queue.get()
-				logging.info("like_follow_unfollow: unfollow_users: unfollow")
+				LOGGER.info("like_follow_unfollow: unfollow_users: unfollow")
 				ret = self.unfollow_user(user_id)
 				if ret is None: 
-					logging.info("like_follow_unfollow: unfollow_users: unfollow fail")
+					LOGGER.info("like_follow_unfollow: unfollow_users: unfollow fail")
 					followed_queue.put(user_id)
 				self.hour_unfollows.put(user_id)
 
 		followed_queue = SQLiteQueue(self.directory+'/followed_users')
 		while True:
-			logging.info("like_follow_unfollow: target_users")
+			LOGGER.info("like_follow_unfollow: target_users")
 			target_users()
-			logging.info("like_follow_unfollow: unfollow_users")
+			LOGGER.info("like_follow_unfollow: unfollow_users")
 			unfollow_users()
-			logging.info("like_follow_unfollow: sleep")
+			LOGGER.info("like_follow_unfollow: sleep")
 			sleep(5*60)
 
 	def run(self):
@@ -537,13 +539,14 @@ if __name__ == '__main__':
 
 	username = sys.argv[1]
 
-	loglevel = 'warning'
-	#loglevel = 'info'
-	numeric_level = getattr(logging, loglevel.upper(), None)
-	if not isinstance(numeric_level, int):
-		raise ValueError('Invalid log level: %s' % loglevel)
-	logging.basicConfig(level=numeric_level)
-	logging.getLogger("requests").setLevel(logging.WARNING)
+	formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+	handler = logging.FileHandler(username+'/debug.log', mode='w')
+	handler.setFormatter(formatter)
+
+	LOGGER.addHandler(handler)
+	logging.getLogger('requests').addHandler(handler)
+	LOGGER.setLevel(logging.DEBUG)
+	logging.getLogger('requests').setLevel(logging.WARNING)
 
 	bot = InstaBot(username)
 	bot.run()
