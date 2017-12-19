@@ -8,6 +8,7 @@ from sklearn.linear_model import LogisticRegressionCV
 
 from time import sleep
 from copy import deepcopy
+from logging.handlers import RotatingFileHandler
 import threading
 import random, requests, datetime, sys, pickle, os, yaml, json, logging
 import numpy as np
@@ -540,7 +541,8 @@ if __name__ == '__main__':
 	username = sys.argv[1]
 
 	formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-	handler = logging.FileHandler(username+'/debug.log', mode='w')
+	handler = RotatingFileHandler(username+'/debug.log', mode='a', maxBytes=5*1024*1024,
+		backupCount=1, encoding=None, delay=0)
 	handler.setFormatter(formatter)
 
 	LOGGER.addHandler(handler)
