@@ -8,8 +8,8 @@ A sub-directory should be made in the same directory as instabot.py. This should
 
 ### Install requirements
 
-pip3 install -r requirements.txt
+`pip3 install -r requirements.txt`
 
 ### Usage
 
-python3 instabot.py \<settings directory\>
+`python3 instabot.py <settings directory>`
