@@ -23,7 +23,6 @@ class ModifiedInstagramAPI(InstagramAPI):
     def SendRequest(self, endpoint, post=None, login=False):
         if (not self.isLoggedIn and not login):
             raise Exception("Not logged in!\n")
-            return None
         self.s.headers.update({'Connection' : 'close',
                                'Accept' : '*/*',
                                'Content-type' : 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -46,7 +45,7 @@ class ModifiedInstagramAPI(InstagramAPI):
             # if you need proxy make something like this:
             # self.s.proxies = {"https" : "http://proxyip:proxyport"}
             response = self.SendRequest('si/fetch_headers/?challenge_type=signup&guid=' + \
-				self.generateUUID(False), None, True)
+                self.generateUUID(False), None, True)
             if response.status_code == 200:
 
                 data = {'phone_id'   : self.generateUUID(True),
@@ -58,7 +57,7 @@ class ModifiedInstagramAPI(InstagramAPI):
                         'login_attempt_count' : '0'}
 
                 response = self.SendRequest('accounts/login/',
-				                            self.generateSignature(json.dumps(data)), 
+                                            self.generateSignature(json.dumps(data)),
                                             True)
                 if response.status_code == 200:
                     self.isLoggedIn = True
@@ -150,6 +149,10 @@ class PriorityQueue:
 class InstaBot:
     def __init__(self, directory=''):
 
+        self.max_hour_follows = 0
+        self.username = ''
+        self.password = ''
+
         self.directory = directory
         self.load_settings()
 
@@ -179,6 +182,8 @@ class InstaBot:
         self.api = ModifiedInstagramAPI(self.username, self.password)
         self.api.login()
 
+        self.like_deficit = 0 # how many extra likes need to be made up
+
     def load_settings(self):
         settings = yaml.load(open(self.directory+'/settings.yml', 'r'))
         for k, v in settings.items():
@@ -189,6 +194,7 @@ class InstaBot:
         sleep(t)
 
     def send_request(self, request, *args, **kwargs):
+        LOGGER.debug("send_request; acquiring lock")
         self.api_lock.acquire()
         self.wait()
         ret = None
@@ -196,8 +202,11 @@ class InstaBot:
         LOGGER.debug("send_request; args: "+str(args))
         LOGGER.debug("send_request; kwargs: "+str(kwargs))
         try:
+            LOGGER.debug("send_request; sending request")
             response = request(*args, **kwargs)
+            LOGGER.debug("send_request; sent request")
             if response.status_code == 200:
+                LOGGER.debug("send_request; http 200")
                 ret = json.loads(response.text)
             else:
                 LOGGER.warning("send_request; Response:  "+str(response))
@@ -215,6 +224,7 @@ class InstaBot:
         except Exception as e:
             LOGGER.error("send_request; Exception: "+str(e))
         self.api_lock.release()
+        LOGGER.debug("send_request; released lock")
         return ret
 
     def get_tag_feed(self, tag):
@@ -467,9 +477,11 @@ class InstaBot:
                     return
 
                 # like
-                if self.likes_per_user > 0:
+                self.like_deficit += self.likes_per_user
+                if self.like_deficit > 0:
                     for i, item in enumerate(items['items']):
-                        if len(self.hour_likes) >= self.likes_per_user * (len(self.hour_follows)+1):
+                        if self.like_deficit == 0: 
+                        # if len(self.hour_likes) >= self.likes_per_user * (len(self.hour_follows)+1):
                             break
 
                         media_id = item['pk']
@@ -478,6 +490,7 @@ class InstaBot:
                             LOGGER.info("like_follow_unfollow: target_users: target_user: like")
                             self.like_media(media_id)
                             self.hour_likes.put(media_id)
+                            self.like_deficit -= 1
 
                 # follow
                 if self.max_hour_follows > 0 and self.max_followed > 0:
