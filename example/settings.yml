@@ -4,12 +4,14 @@
 # wait on average mean_wait_time seconds between API queries
 # concurrently follow up to max_followed users
 # unfollow oldest followed users to maintain this number
+# weight of old data decays with data_half_life (in days)
 username:         example
 password:         password
 max_hour_follows: 20
 likes_per_user:   3
 mean_wait_time:   1
 max_followed:     100
+data_half_life:   7
 target_users_list:
   - username1
   - username2

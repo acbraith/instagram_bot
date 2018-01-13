@@ -149,9 +149,11 @@ class PriorityQueue:
 class InstaBot:
     def __init__(self, directory=''):
 
-        self.max_hour_follows = 0
+        self.max_hour_follows = 10
+        self.likes_per_user = 3
         self.username = ''
         self.password = ''
+        self.data_half_life = 7 # weight of training data decays with this half life (in days)
 
         self.directory = directory
         self.load_settings()
@@ -322,7 +324,11 @@ class InstaBot:
             X, y = get_model_data()
             if len(np.unique(y)) > 1:
                 m = deepcopy(self.model)
-                m.fit(X, y)
+                sample_weight = np.reshape(
+                    np.logspace(0, len(y)/(self.max_hour_follows*24*self.data_half_life), 
+                        num=len(y), base=2),
+                    (-1,))
+                m.fit(X, y, sample_weight=sample_weight)
                 self.model = m
                 #return cross_val_score(m, X, y, n_jobs=1).mean()
             return 0
@@ -384,7 +390,7 @@ class InstaBot:
 
         def get_followback_confidence(user_info):
             x = [user_info['followers'], user_info['followings']]
-            x = np.reshape(x,(1, -1))
+            x = np.reshape(x, (1, -1))
             tag = self.one_hot_encode([user_info['tag']])
             x = np.append(np.log1p(x.astype(float)), tag, axis=1)
             try:
@@ -498,6 +504,7 @@ class InstaBot:
                     self.follow_user(user_id)
                     self.hour_follows.put(user_id)
                     followed_queue.put(user_id)
+            # end target_user
 
             while len(self.hour_follows) < self.max_hour_follows:
                 user_info = self.targets_queue.get()
