@@ -31,9 +31,9 @@ class ModifiedInstagramAPI(InstagramAPI):
                                'User-Agent' : self.USER_AGENT})
         try:
             if post != None: # POST
-                response = self.s.post(self.API_URL + endpoint, data=post) # , verify=False
+                response = self.s.post(self.API_URL + endpoint, data=post, timeout=10) # , verify=False
             else: # GET
-                response = self.s.get(self.API_URL + endpoint) # , verify=False
+                response = self.s.get(self.API_URL + endpoint, timeout=10) # , verify=False
         except Exception as e:
             LOGGER.error("SendRequest: exception: "+str(e))
             return None
@@ -151,6 +151,7 @@ class InstaBot:
 
         self.max_hour_follows = 10
         self.likes_per_user = 3
+        self.explores_per_user = 10
         self.username = ''
         self.password = ''
         self.data_half_life = 7 # weight of training data decays with this half life (in days)
@@ -158,11 +159,13 @@ class InstaBot:
         self.directory = directory
         self.load_settings()
 
-        self.targets_queue = PriorityQueue(self.max_hour_follows * 10)
+        self.targets_queue = PriorityQueue(
+            self.max_hour_follows * self.explores_per_user * 12)
 
         self.hour_likes = SlidingWindow(self.directory+'/hour_likes')
         self.hour_follows = SlidingWindow(self.directory+'/hour_follows')
         self.hour_unfollows = SlidingWindow(self.directory+'/hour_unfollows')
+        self.hour_explores = SlidingWindow(self.directory+'/hour_explores')
 
         self.target_data_path = self.directory+'/target_data/data.pkl'
         if not os.path.exists(self.directory+'/target_data'):
@@ -352,6 +355,7 @@ class InstaBot:
             print("  Hour Likes    :", len(self.hour_likes))
             print("  Hour Follows  :", len(self.hour_follows))
             print("  Hour Unfollows:", len(self.hour_unfollows))
+            print("  Hour Explores :", len(self.hour_explores))
             print("  Targets Queue:")
             print("    Total Len:", len(self.targets_queue))
             try:
@@ -420,7 +424,7 @@ class InstaBot:
 
         # build up self.targets_queue
         while True:
-            for _ in range(self.max_hour_follows):
+            while len(self.hour_explores) < self.max_hour_follows * self.explores_per_user:
                 try:
                     # select target_user_list or tag_list
                     if len(target_user_iterators) == 0 or np.random.rand() < 0.5:
@@ -467,10 +471,11 @@ class InstaBot:
                                 followback_confidence = 1
 
                             self.targets_queue.put(user_info, followback_confidence)
+                            self.hour_explores.put(user_id)
                 except Exception as e:
                     LOGGER.error("find_targets; Exception: "+str(e))
             LOGGER.info("find_targets: sleep")
-            sleep(15*60)
+            sleep(5*60)
 
     def like_follow_unfollow(self):
 
