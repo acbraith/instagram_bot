@@ -1,17 +1,21 @@
 # max_hour_follows follows per hour (sliding window)
 # likes_per_user media likes for each targetted user
-	# careful with going too fast; IG can block you for a while
+# explores_per_user potential targets examined per actual target
+#     careful going too fast; IG can block you for a while
 # wait on average mean_wait_time seconds between API queries
+# wait spam_wait_time when instagram detects spammy behaviour
 # concurrently follow up to max_followed users
-# unfollow oldest followed users to maintain this number
+#     unfollow oldest followed users to maintain this number
 # weight of old data decays with data_half_life (in days)
-username:         example
-password:         password
-max_hour_follows: 20
-likes_per_user:   3
-mean_wait_time:   1
-max_followed:     100
-data_half_life:   7
+username:           example
+password:           password
+max_hour_follows:   20
+likes_per_user:     3
+explores_per_user:  10
+mean_wait_time:     1
+spam_wait_time:     43200
+max_followed:       100
+data_half_life:     7
 target_users_list:
   - username1
   - username2
