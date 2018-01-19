@@ -10,7 +10,15 @@ from time import sleep
 from copy import deepcopy
 from logging.handlers import RotatingFileHandler
 import threading
-import random, requests, datetime, sys, pickle, os, yaml, json, logging
+import random
+import requests
+import datetime
+import sys
+import pickle
+import os
+import yaml
+import json
+import logging
 import numpy as np
 import pandas as pd
 
@@ -152,9 +160,14 @@ class InstaBot:
         self.max_hour_follows = 10
         self.likes_per_user = 3
         self.explores_per_user = 10
+        self.mean_wait_time = 3
+        self.spam_wait_time = 12*60*60
         self.username = ''
         self.password = ''
         self.data_half_life = 7 # weight of training data decays with this half life (in days)
+
+        self.tag_list = ['instagram']
+        self.target_user_list = []
 
         self.directory = directory
         self.load_settings()
@@ -166,7 +179,7 @@ class InstaBot:
         self.hour_follows = SlidingWindow(self.directory+'/hour_follows')
         self.hour_unfollows = SlidingWindow(self.directory+'/hour_unfollows')
         self.hour_explores = SlidingWindow(self.directory+'/hour_explores')
-
+        
         self.target_data_path = self.directory+'/target_data/data.pkl'
         if not os.path.exists(self.directory+'/target_data'):
             os.makedirs(self.directory+'/target_data')
@@ -178,6 +191,8 @@ class InstaBot:
                          'followers', 'followings', 'follow_back',
                          'tag', 'likes'])
 
+        self.like_deficit = 0 # how many extra likes need to be made up
+
         self.target_data_lock = threading.Lock()
 
         self.model = LogisticRegressionCV()
@@ -185,9 +200,11 @@ class InstaBot:
         self.api_lock = threading.Lock()
 
         self.api = ModifiedInstagramAPI(self.username, self.password)
-        self.api.login()
 
-        self.like_deficit = 0 # how many extra likes need to be made up
+        self.logged_in = self.api.login()
+
+        return self.logged_in
+
 
     def load_settings(self):
         settings = yaml.load(open(self.directory+'/settings.yml', 'r'))
@@ -199,7 +216,6 @@ class InstaBot:
         sleep(t)
 
     def send_request(self, request, *args, **kwargs):
-        LOGGER.debug("send_request; acquiring lock")
         self.api_lock.acquire()
         self.wait()
         ret = None
@@ -207,9 +223,7 @@ class InstaBot:
         LOGGER.debug("send_request; args: "+str(args))
         LOGGER.debug("send_request; kwargs: "+str(kwargs))
         try:
-            LOGGER.debug("send_request; sending request")
             response = request(*args, **kwargs)
-            LOGGER.debug("send_request; sent request")
             if response.status_code == 200:
                 LOGGER.debug("send_request; http 200")
                 ret = json.loads(response.text)
@@ -221,7 +235,7 @@ class InstaBot:
                     try:
                         if json.loads(response.text)['spam']:
                             LOGGER.warning("send_request; Spam Detected")
-                            sleep(30*60)
+                            sleep(self.spam_wait_time)
                     except:
                         LOGGER.warning("send_request; Possible Rate Limiting Detected")
                         sleep(5*60)
@@ -229,7 +243,6 @@ class InstaBot:
         except Exception as e:
             LOGGER.error("send_request; Exception: "+str(e))
         self.api_lock.release()
-        LOGGER.debug("send_request; released lock")
         return ret
 
     def get_tag_feed(self, tag):
@@ -261,6 +274,7 @@ class InstaBot:
         pickle.dump(self.target_data, open(self.target_data_path, 'wb'), protocol=2)
 
     def update_target_data(self, row):
+        user_id = row[0]
         if row[list(self.target_data.columns).index('user_id')] in self.target_data['user_id']:
             self.target_data.loc[self.target_data['user_id']==user_id, :] = row
         else:
@@ -363,7 +377,7 @@ class InstaBot:
                 qs = np.percentile(priorities[:int(self.max_hour_follows)], [100, 50, 0])
                 print("    Top-"+str(self.max_hour_follows)+" Max-Med-Min:",
                       ['{0:.2f}'.format(x) for x in qs])
-            except:
+            except Exception:
                 pass
             try:
                 if False:
@@ -375,7 +389,7 @@ class InstaBot:
                     for tag, coef in zip(l, self.model.coef_[0][2:]):
                         print("      "+tag.rjust(len(max(l, key=len)))+": 1"+\
                               '{0:+.1e}'.format(np.exp(coef)-1))
-            except:
+            except Exception:
                 pass
             print("  Thread Alive:")
             print("    fit_model           :", self.fit_model_thread.is_alive())
@@ -400,7 +414,7 @@ class InstaBot:
             try:
                 followback_confidence = \
                     self.model.predict_proba(x)[0, list(self.model.classes_).index(1)]
-            except (NotFittedError, xgb.core.XGBoostError):
+            except NotFittedError:
                 LOGGER.warning("get_followback_confidence, model not fitted")
                 followback_confidence = 1
             return followback_confidence
@@ -427,6 +441,7 @@ class InstaBot:
             while len(self.hour_explores) < self.max_hour_follows * self.explores_per_user:
                 try:
                     # select target_user_list or tag_list
+                    # TODO use model to intelligently choose where to explore
                     if len(target_user_iterators) == 0 or np.random.rand() < 0.5:
                         # get user_ids from tag feed
                         LOGGER.info("find_targets: select_tag")
@@ -438,6 +453,7 @@ class InstaBot:
                         LOGGER.info("find_targets: select_target_username")
                         idx = np.random.randint(0, len(target_user_iterators))
                         user_ids, tag = target_user_iterators[idx]
+                        # tag here refers to user_id who's followers we are targetting
                         if not any(tag):
                             del target_user_iterators[idx]
                             raise Exception("find_targets: user_ids iterator empty")
@@ -549,6 +565,9 @@ class InstaBot:
             sleep(5*60)
 
     def run(self):
+
+        if not(self.logged_in):
+            raise Exception("Not logged in to Instagram")
 
         # model data gathering and fitting
         self.fit_model_thread = threading.Thread(
