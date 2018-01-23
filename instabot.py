@@ -164,7 +164,8 @@ class InstaBot:
         self.spam_wait_time = 12*60*60
         self.username = ''
         self.password = ''
-        self.data_half_life = 7 # weight of training data decays with this half life (in days)
+        self.max_followed = 100
+        self.data_half_life = 7
 
         self.tag_list = ['instagram']
         self.target_user_list = []
@@ -191,6 +192,14 @@ class InstaBot:
                          'followers', 'followings', 'follow_back',
                          'tag', 'likes'])
 
+        self.hist_data_path = self.directory+'/hist_data/data.csv'
+        if not os.path.exists(self.directory+'/hist_data'):
+            os.makedirs(self.directory+'/hist_data')
+        try:
+            self.hist_data = pd.read_csv(self.hist_data_path)
+        except Exception as e:
+            self.hist_data = pd.DataFrame(
+                columns=['timestamp', 'followers', 'followings'])
         self.like_deficit = 0 # how many extra likes need to be made up
 
         self.target_data_lock = threading.Lock()
@@ -203,7 +212,10 @@ class InstaBot:
 
         self.logged_in = self.api.login()
 
-        return self.logged_in
+        user_info = self.send_request(self.api.searchUsername, self.username)
+        self.user_id = user_info['user']['pk']
+        self.follower_count = []
+        self.following_count = []
 
 
     def load_settings(self):
@@ -263,12 +275,15 @@ class InstaBot:
         ret = self.send_request(self.api.userFriendship, user_id)
         if ret is None: return None
         return ret
-    def followed_by(self, user_id):
+    def followed_by(self, user_id, default=False):
         ret = self.get_friendship_info(user_id)
         try:
             return ret['followed_by']
         except:
-            return False
+            return default
+
+    def save_hist_data(self):
+        self.hist_data.to_csv(self.hist_data_path, index=False)
 
     def save_target_data(self):
         pickle.dump(self.target_data, open(self.target_data_path, 'wb'), protocol=2)
@@ -288,7 +303,8 @@ class InstaBot:
         except:
             tags_users_list = self.tag_list
         def tag_idx(tag):
-            if tag in tags_users_list: return tags_users_list.index(tag)
+            if tag in tags_users_list:
+                return tags_users_list.index(tag)
             return len(tags_users_list)
         tags = [tag_idx(t) for t in tags]
         one_hot_tags = np.eye(len(tags_users_list)+1)[tags]
@@ -308,7 +324,8 @@ class InstaBot:
 
     def get_following_follower_counts(self, user_id):
         user_info = self.get_user_info(user_id)
-        if user_info is None: return (-1, -1)
+        if user_info is None:
+            return (-1, -1)
         return (user_info['follower_count'], user_info['following_count'])
 
     # # # # # # # # # #
@@ -342,18 +359,15 @@ class InstaBot:
             if len(np.unique(y)) > 1:
                 m = deepcopy(self.model)
                 sample_weight = np.reshape(
-                    np.logspace(0, len(y)/(self.max_hour_follows*24*self.data_half_life), 
-                        num=len(y), base=2),
+                    np.logspace(0, len(y)/(self.max_hour_follows*24*self.data_half_life),
+                                num=len(y), base=2),
                     (-1,))
                 m.fit(X, y, sample_weight=sample_weight)
                 self.model = m
-                #return cross_val_score(m, X, y, n_jobs=1).mean()
-            return 0
 
         while True:
             LOGGER.info("fit_model: update_model")
-            score = update_model()
-            #LOGGER.info("fit_model: cross_val_score "+'{0:.3f}'.format(score))
+            update_model()
             LOGGER.info("fit_model: update_follow_backs")
             update_follow_backs()
             LOGGER.info("fit_model: save_target_data")
@@ -364,12 +378,20 @@ class InstaBot:
     def info_printer(self):
         followed_queue = SQLiteQueue(self.directory+'/followed_users')
         while True:
+            follower_count, following_count = self.get_following_follower_counts(self.user_id)
+            row = pd.Series([datetime.datetime.now(), follower_count, following_count], 
+                index=self.hist_data.columns)
+            self.hist_data = self.hist_data.append(row, ignore_index=True)
+            self.save_hist_data()
+
             print(datetime.datetime.now().strftime('%x %X'))
-            print("  Followed Users:", len(followed_queue))
-            print("  Hour Likes    :", len(self.hour_likes))
-            print("  Hour Follows  :", len(self.hour_follows))
-            print("  Hour Unfollows:", len(self.hour_unfollows))
-            print("  Hour Explores :", len(self.hour_explores))
+            print("  Follower Count :", follower_count)
+            print("  Following Count:", following_count)
+            print("  Followed Users :", len(followed_queue))
+            print("  Hour Likes     :", len(self.hour_likes))
+            print("  Hour Follows   :", len(self.hour_follows))
+            print("  Hour Unfollows :", len(self.hour_unfollows))
+            print("  Hour Explores  :", len(self.hour_explores))
             print("  Targets Queue:")
             print("    Total Len:", len(self.targets_queue))
             try:
@@ -385,12 +407,12 @@ class InstaBot:
                     print("    Intercept Odds Ratio:",
                           '{0:.2e}'.format(np.exp(self.model.intercept_[0])))
                     print("    Coefficient Odds Ratios:")
-                    l = ['followers', 'followings'] + self.tag_list
+                    l = ['followers', 'followings'] + self.tag_list + self.target_user_list
                     for tag, coef in zip(l, self.model.coef_[0][2:]):
                         print("      "+tag.rjust(len(max(l, key=len)))+": 1"+\
                               '{0:+.1e}'.format(np.exp(coef)-1))
-            except Exception:
-                pass
+            except Exception as e:
+                print(e)
             print("  Thread Alive:")
             print("    fit_model           :", self.fit_model_thread.is_alive())
             print("    find_targets        :", self.find_targets_thread.is_alive())
@@ -552,7 +574,8 @@ class InstaBot:
                 ret = self.unfollow_user(user_id)
                 if ret is None:
                     LOGGER.info("like_follow_unfollow: unfollow_users: unfollow fail")
-                    followed_queue.put(user_id)
+                    if self.followed_by(user_id, default=True):
+                        followed_queue.put(user_id)
                 self.hour_unfollows.put(user_id)
 
         followed_queue = SQLiteQueue(self.directory+'/followed_users')
@@ -593,11 +616,13 @@ class InstaBot:
 # usage: python3 instabot.py <USERNAME>
 if __name__ == '__main__':
 
-    username = sys.argv[1]
+    directory = sys.argv[1]
 
+    if not os.path.exists(directory+'/log'):
+        os.makedirs(directory+'/log')
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-    handler = RotatingFileHandler(username+'/debug.log', mode='a', maxBytes=5*1024*1024,
-                                  backupCount=1, encoding=None, delay=0)
+    handler = RotatingFileHandler(directory+'/log/debug.log', mode='a', maxBytes=.1*1024*1024,
+                                  backupCount=10, encoding=None, delay=0)
     handler.setFormatter(formatter)
 
     LOGGER.addHandler(handler)
@@ -605,5 +630,5 @@ if __name__ == '__main__':
     LOGGER.setLevel(logging.DEBUG)
     logging.getLogger('requests').setLevel(logging.WARNING)
 
-    bot = InstaBot(username)
+    bot = InstaBot(directory)
     bot.run()
