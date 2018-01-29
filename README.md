@@ -6,6 +6,8 @@ The bot will search through hashtag feeds and targetted users follower lists to 
 
 A sub-directory should be made in the same directory as instabot.py. This should contain a YAML settings.yml file, as shown in the example directory. The bot's model data, it's sliding windows (to track likes/follows/unfollows done) and it's queue of followed users will be stored here.
 
+For those interested, historical follower/following counts are recorded in `<directory>/data/hist_data/`.
+
 ### Install requirements
 
 `pip3 install -r requirements.txt`
