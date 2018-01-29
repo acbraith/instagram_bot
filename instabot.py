@@ -179,6 +179,8 @@ class InstaBot:
         self.settings_directory = settings_directory
         self.load_settings()
         self.directory = self.username if settings_directory == '.' else settings_directory
+        if not os.path.exists(self.directory):
+            os.makedirs(self.directory)
 
         self.targets_queue = PriorityQueue(
             self.max_hour_follows * self.explores_per_follow * 12)
@@ -316,6 +318,15 @@ class InstaBot:
         except:
             return default
 
+    def get_followed_queue(self):
+        while True:
+            try:
+                return SQLiteQueue(self.directory+'/data/followed_users')
+            except OSError as e:
+                if e.errno != os.errno.EEXIST:
+                    raise   
+                sleep(1)
+
     def save_hist_data(self):
         self.hist_data.to_csv(self.hist_data_path, index=False)
 
@@ -437,7 +448,7 @@ class InstaBot:
             sleep(60*60)
 
     def info_printer(self):
-        followed_queue = SQLiteQueue(self.directory+'/data/followed_users')
+        followed_queue = self.get_followed_queue()
         while True:
             follower_count, following_count = self.get_following_follower_counts(self.user_id)
             row = pd.Series([datetime.datetime.now(), follower_count, following_count],
@@ -640,7 +651,7 @@ class InstaBot:
                 LOGGER.info("like_follow_unfollow: unfollow_users: unfollow")
                 self.unfollow_user(followed_queue.get(), followed_queue)
 
-        followed_queue = SQLiteQueue(self.directory+'/data/followed_users')
+        followed_queue = self.get_followed_queue()
         while True:
             LOGGER.info("like_follow_unfollow: target_users")
             target_users()
