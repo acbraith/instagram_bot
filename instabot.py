@@ -253,10 +253,12 @@ class InstaBot:
             if response.status_code == 200:
                 LOGGER.debug("send_request; http 200")
                 ret = json.loads(response.text)
+            elif response.status_code == 404:
+                LOGGER.debug("send_request; http 404")
+                ret = 404
             else:
                 LOGGER.warning("send_request; Response:  "+str(response))
-                if response.status_code != 404:
-                    LOGGER.warning("send_request; Response text:  "+str(response.text))
+                LOGGER.warning("send_request; Response text:  "+str(response.text))
                 if response.status_code in [400, 429]:
                     try:
                         if json.loads(response.text)['spam']:
@@ -272,31 +274,42 @@ class InstaBot:
         return ret
 
     def get_tag_feed(self, tag):
-        return self.send_request(self.api.tagFeed, tag)
+        ret =  self.send_request(self.api.tagFeed, tag)
+        if ret is None or ret==404: return None
+        return ret
     def get_user_feed(self, user_id):
-        return self.send_request(self.api.getUserFeed, user_id)
+        ret =  self.send_request(self.api.getUserFeed, user_id)
+        if ret is None or ret==404: return None
+        return ret
     def like_media(self, media_id):
         self.hour_likes.put(media_id)
         self.day_likes.put(media_id)
-        return self.send_request(self.api.like, media_id)
-    def follow_user(self, user_id):
+        self.send_request(self.api.like, media_id)
+    def follow_user(self, user_id, followed_queue):
         self.hour_follows.put(user_id)
         self.day_follows.put(user_id)
-        return self.send_request(self.api.follow, user_id)
-    def unfollow_user(self, user_id):
+        followed_queue.put(user_id)
+        self.send_request(self.api.follow, user_id)
+    def unfollow_user(self, user_id, followed_queue):
         self.hour_unfollows.put(user_id)
         self.day_unfollows.put(user_id)
-        return self.send_request(self.api.unfollow, user_id)
+        ret = self.send_request(self.api.unfollow, user_id)
+        if ret is None:
+            LOGGER.info("unfollow_users: unfollow fail")
+            if self.followed_by(user_id, default=True):
+                followed_queue.put(user_id)
     def get_user_info(self, user_id):
         ret = self.send_request(self.api.getUsernameInfo, user_id)
-        if ret is None: return None
+        if ret is None or ret==404: return None
         return ret['user']
     def get_friendship_info(self, user_id):
         ret = self.send_request(self.api.userFriendship, user_id)
-        if ret is None: return None
+        if ret is None or ret==404: return None
         return ret
     def followed_by(self, user_id, default=False):
         ret = self.get_friendship_info(user_id)
+        if ret == 404:
+            return False
         try:
             return ret['followed_by']
         except:
@@ -600,8 +613,7 @@ class InstaBot:
                 # follow
                 if self.max_hour_follows > 0 and self.max_followed > 0:
                     LOGGER.info("like_follow_unfollow: target_users: target_user: follow")
-                    self.follow_user(user_id)
-                    followed_queue.put(user_id)
+                    self.follow_user(user_id, followed_queue)
             # end target_user
 
             while self.below_follow_limit():
@@ -624,13 +636,8 @@ class InstaBot:
         def unfollow_users():
             while (len(followed_queue) > self.max_followed) and \
                 self.below_unfollow_limit():
-                user_id = followed_queue.get()
                 LOGGER.info("like_follow_unfollow: unfollow_users: unfollow")
-                ret = self.unfollow_user(user_id)
-                if ret is None:
-                    LOGGER.info("like_follow_unfollow: unfollow_users: unfollow fail")
-                    if self.followed_by(user_id, default=True):
-                        followed_queue.put(user_id)
+                self.unfollow_user(followed_queue.get(), followed_queue)
 
         followed_queue = SQLiteQueue(self.directory+'/data/followed_users')
         while True:
