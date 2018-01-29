@@ -14,4 +14,6 @@ For those interested, historical follower/following counts are recorded in `<dir
 
 ### Usage
 
-`python3 instabot.py <settings directory>`
+`python3 instabot.py` searches for `settings.yml` in current directory, and creates and populates a `username` directory with data for the bot.
+
+`python3 instabot.py <directory>` allows you to specify the directory instabot will search for `settings.yml` in and use for data.

@@ -155,7 +155,7 @@ class PriorityQueue:
         return item.value
 
 class InstaBot:
-    def __init__(self, directory=''):
+    def __init__(self, settings_directory='.'):
 
         self.username = ''
         self.password = ''
@@ -176,8 +176,9 @@ class InstaBot:
 
         self.data_half_life = 7
 
-        self.directory = directory
+        self.settings_directory = settings_directory
         self.load_settings()
+        self.directory = self.username if settings_directory == '.' else settings_directory
 
         self.targets_queue = PriorityQueue(
             self.max_hour_follows * self.explores_per_follow * 12)
@@ -233,7 +234,7 @@ class InstaBot:
 
 
     def load_settings(self):
-        settings = yaml.load(open(self.directory+'/settings.yml', 'r'))
+        settings = yaml.load(open(self.settings_directory+'/settings.yml', 'r'))
         for k, v in settings.items():
             setattr(self, k, v)
 
@@ -674,22 +675,26 @@ class InstaBot:
         self.print_info_thread.start()
 
 
-# usage: python3 instabot.py <USERNAME>
 if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        directory = '.'
+    else:
+        directory = sys.argv[1]
 
-    directory = sys.argv[1]
+    bot = InstaBot(directory)
 
+    # set up logging
+    directory = bot.directory
     if not os.path.exists(directory+'/log'):
         os.makedirs(directory+'/log')
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
     handler = RotatingFileHandler(directory+'/log/debug.log', mode='a', maxBytes=.1*1024*1024,
                                   backupCount=10, encoding=None, delay=0)
     handler.setFormatter(formatter)
-
     LOGGER.addHandler(handler)
     logging.getLogger('requests').addHandler(handler)
     LOGGER.setLevel(logging.DEBUG)
     logging.getLogger('requests').setLevel(logging.WARNING)
 
-    bot = InstaBot(directory)
+    # run bot
     bot.run()
