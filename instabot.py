@@ -158,6 +158,7 @@ class InstaBot:
     def __init__(self, directory=''):
 
         self.max_hour_follows = 10
+        self.max_day_follows = 10*16
         self.likes_per_user = 3
         self.explores_per_user = 10
         self.mean_wait_time = 3
@@ -180,7 +181,15 @@ class InstaBot:
         self.hour_follows = SlidingWindow(self.directory+'/hour_follows')
         self.hour_unfollows = SlidingWindow(self.directory+'/hour_unfollows')
         self.hour_explores = SlidingWindow(self.directory+'/hour_explores')
-        
+        self.day_likes = SlidingWindow(self.directory+'/day_likes',
+            length=3600*24, check_time=3600)
+        self.day_follows = SlidingWindow(self.directory+'/day_follows',
+            length=3600*24, check_time=3600)
+        self.day_unfollows = SlidingWindow(self.directory+'/day_unfollows',
+            length=3600*24, check_time=3600)
+        self.day_explores = SlidingWindow(self.directory+'/day_explores',
+            length=3600*24, check_time=3600)
+
         self.target_data_path = self.directory+'/target_data/data.pkl'
         if not os.path.exists(self.directory+'/target_data'):
             os.makedirs(self.directory+'/target_data')
@@ -262,10 +271,16 @@ class InstaBot:
     def get_user_feed(self, user_id):
         return self.send_request(self.api.getUserFeed, user_id)
     def like_media(self, media_id):
+        self.hour_likes.put(media_id)
+        self.day_likes.put(media_id)
         return self.send_request(self.api.like, media_id)
     def follow_user(self, user_id):
+        self.hour_follows.put(user_id)
+        self.day_follows.put(user_id)
         return self.send_request(self.api.follow, user_id)
     def unfollow_user(self, user_id):
+        self.hour_unfollows.put(user_id)
+        self.day_unfollows.put(user_id)
         return self.send_request(self.api.unfollow, user_id)
     def get_user_info(self, user_id):
         ret = self.send_request(self.api.getUsernameInfo, user_id)
@@ -328,6 +343,28 @@ class InstaBot:
             return (-1, -1)
         return (user_info['follower_count'], user_info['following_count'])
 
+    def below_like_limit(self):
+        # not used; like_deficit used instead
+        below_hour_limit = len(self.hour_likes) < self.max_hour_follows * self.likes_per_user
+        below_day_limit = len(self.day_likes) < self.max_day_follows * self.likes_per_user
+        return below_hour_limit and below_day_limit
+
+    def below_explore_limit(self):
+        below_hour_limit = len(self.hour_explores) < self.max_hour_follows * self.explores_per_user
+        below_day_limit = len(self.day_explores) < self.max_day_follows * self.explores_per_user
+        return below_hour_limit and below_day_limit
+
+    def below_follow_limit(self):
+        below_hour_limit = len(self.hour_follows) < self.max_hour_follows
+        below_day_limit = len(self.day_follows) < self.max_day_follows
+        return len(self.hour_follows) < self.max_hour_follows
+        return below_hour_limit and below_day_limit
+
+    def below_unfollow_limit(self):
+        below_hour_limit = len(self.hour_unfollows) < self.max_hour_follows*1.1
+        below_day_limit = len(self.day_unfollows) < self.max_day_follows*1.1
+        return below_hour_limit and below_day_limit
+
     # # # # # # # # # #
     # Bot Workers
     # # # # # # # # # #
@@ -335,7 +372,7 @@ class InstaBot:
 
         def update_follow_backs():
             to_update = self.target_data.loc[
-                (datetime.datetime.now()-self.target_data['timestamp']>datetime.timedelta(days=1))
+                (datetime.datetime.now()-self.target_data['timestamp'] > datetime.timedelta(days=1))
                 & pd.isnull(self.target_data['follow_back'])]
 
             for index, row in to_update.iterrows():
@@ -379,25 +416,33 @@ class InstaBot:
         followed_queue = SQLiteQueue(self.directory+'/followed_users')
         while True:
             follower_count, following_count = self.get_following_follower_counts(self.user_id)
-            row = pd.Series([datetime.datetime.now(), follower_count, following_count], 
-                index=self.hist_data.columns)
+            row = pd.Series([datetime.datetime.now(), follower_count, following_count],
+                            index=self.hist_data.columns)
             self.hist_data = self.hist_data.append(row, ignore_index=True)
             self.save_hist_data()
 
             print(datetime.datetime.now().strftime('%x %X'))
-            print("  Follower Count :", follower_count)
-            print("  Following Count:", following_count)
-            print("  Followed Users :", len(followed_queue))
-            print("  Hour Likes     :", len(self.hour_likes))
-            print("  Hour Follows   :", len(self.hour_follows))
-            print("  Hour Unfollows :", len(self.hour_unfollows))
-            print("  Hour Explores  :", len(self.hour_explores))
-            print("  Targets Queue:")
-            print("    Total Len:", len(self.targets_queue))
+            print("  My Info:")
+            print("    Follower Count :", follower_count)
+            print("    Following Count:", following_count)
+            print("  InstaBot Activity:")
+            print("    Followed Users :", len(followed_queue))
+            print("    1 hour activity:")
+            print("      Likes        :", len(self.hour_likes))
+            print("      Follows      :", len(self.hour_follows))
+            print("      Unfollows    :", len(self.hour_unfollows))
+            print("      Explores     :", len(self.hour_explores))
+            print("    24 hour activity:")
+            print("      Likes        :", len(self.day_likes))
+            print("      Follows      :", len(self.day_follows))
+            print("      Unfollows    :", len(self.day_unfollows))
+            print("      Explores     :", len(self.day_explores))
+            print("    Targets Queue:")
+            print("      Total Len:", len(self.targets_queue))
             try:
                 priorities = sorted([i.priority for i in self.targets_queue.items], reverse=True)
                 qs = np.percentile(priorities[:int(self.max_hour_follows)], [100, 50, 0])
-                print("    Top-"+str(self.max_hour_follows)+" Max-Med-Min:",
+                print("      Top-"+str(self.max_hour_follows)+" Max-Med-Min:",
                       ['{0:.2f}'.format(x) for x in qs])
             except Exception:
                 pass
@@ -460,7 +505,7 @@ class InstaBot:
 
         # build up self.targets_queue
         while True:
-            while len(self.hour_explores) < self.max_hour_follows * self.explores_per_user:
+            while self.below_explore_limit():
                 try:
                     # select target_user_list or tag_list
                     # TODO use model to intelligently choose where to explore
@@ -510,6 +555,7 @@ class InstaBot:
 
                             self.targets_queue.put(user_info, followback_confidence)
                             self.hour_explores.put(user_id)
+                            self.day_explores.put(user_id)
                 except Exception as e:
                     LOGGER.error("find_targets; Exception: "+str(e))
             LOGGER.info("find_targets: sleep")
@@ -538,18 +584,16 @@ class InstaBot:
                         if not item['has_liked']:
                             LOGGER.info("like_follow_unfollow: target_users: target_user: like")
                             self.like_media(media_id)
-                            self.hour_likes.put(media_id)
                             self.like_deficit -= 1
 
                 # follow
                 if self.max_hour_follows > 0 and self.max_followed > 0:
                     LOGGER.info("like_follow_unfollow: target_users: target_user: follow")
                     self.follow_user(user_id)
-                    self.hour_follows.put(user_id)
                     followed_queue.put(user_id)
             # end target_user
 
-            while len(self.hour_follows) < self.max_hour_follows:
+            while self.below_follow_limit():
                 user_info = self.targets_queue.get()
                 if user_info is not None:
                     user_id = user_info['user_id']
@@ -568,7 +612,7 @@ class InstaBot:
 
         def unfollow_users():
             while (len(followed_queue) > self.max_followed) and \
-                (len(self.hour_unfollows) < self.max_hour_follows*1.1):
+                self.below_unfollow_limit():
                 user_id = followed_queue.get()
                 LOGGER.info("like_follow_unfollow: unfollow_users: unfollow")
                 ret = self.unfollow_user(user_id)
@@ -576,7 +620,6 @@ class InstaBot:
                     LOGGER.info("like_follow_unfollow: unfollow_users: unfollow fail")
                     if self.followed_by(user_id, default=True):
                         followed_queue.put(user_id)
-                self.hour_unfollows.put(user_id)
 
         followed_queue = SQLiteQueue(self.directory+'/followed_users')
         while True:

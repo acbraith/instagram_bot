@@ -9,7 +9,8 @@
 # weight of old data decays with data_half_life (in days)
 username:           example
 password:           password
-max_hour_follows:   20
+max_hour_follows:   10
+max_day_follows:    160
 likes_per_user:     3
 explores_per_user:  10
 mean_wait_time:     1
