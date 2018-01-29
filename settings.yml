@@ -6,7 +6,6 @@ password:             mypassword
 target_users_list:
   - natgeo
   - nasa
-  - username3
 
 # Hashtags to search for targets
 tag_list:
@@ -15,7 +14,8 @@ tag_list:
   - hamster
 
 # Optional Stuff: 
-#   This is all currently just the default values and can be omitted
+#   Here are the default values and can be omitted (or changed)
+#   Careful with raising the limits
 
 # Limit details
 max_hour_follows:     10
@@ -27,10 +27,10 @@ explores_per_follow:  10
 # Max users the bot will concurrently follow
 max_followed:         100
 
-# Sleep times per request and on spam detection (again optional)
+# Sleep times per request and on spam detection
 mean_wait_time:       1
 spam_wait_time:       43200
 
-# Decay rate of day; eg data halves in 'importance' every 7 days here
+# Data weighting rate of decay; time for data to half in 'importance'
 data_half_life:       7
 
