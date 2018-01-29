@@ -347,14 +347,14 @@ class InstaBot:
     def below_like_limit(self):
         # not used; like_deficit used instead
         below_hour_limit = len(self.hour_likes) < self.max_hour_follows * \
-            self.unfollows_per_followself.likes_per_follow
+            self.likes_per_follow
         below_day_limit = len(self.day_likes) < self.max_hour_follows * \
             self.day_activity_hours * self.likes_per_follow
         return below_hour_limit and below_day_limit
 
     def below_explore_limit(self):
         below_hour_limit = len(self.hour_explores) < self.max_hour_follows * \
-            self.unfollows_per_followself.explores_per_follow
+            self.explores_per_follow
         below_day_limit = len(self.day_explores) < self.max_hour_follows * \
             self.day_activity_hours * self.explores_per_follow
         return below_hour_limit and below_day_limit
@@ -465,11 +465,11 @@ class InstaBot:
                               '{0:+.1e}'.format(np.exp(coef)-1))
             except Exception as e:
                 print(e)
-            print("  Thread Alive:")
-            print("    fit_model           :", self.fit_model_thread.is_alive())
-            print("    find_targets        :", self.find_targets_thread.is_alive())
-            print("    like_follow_unfollow:", self.like_follow_unfollow_thread.is_alive())
-            print("  Refresh settings")
+            print("    Thread Alive:")
+            print("      fit_model           :", self.fit_model_thread.is_alive())
+            print("      find_targets        :", self.find_targets_thread.is_alive())
+            print("      like_follow_unfollow:", self.like_follow_unfollow_thread.is_alive())
+            print("  Refreshing settings")
             self.load_settings()
             sleep(15*60)
 
