@@ -1,18 +1,18 @@
 # Login Details
-username:             example  
-password:             password
+username:             myusername  
+password:             mypassword
 
 # User follower lists to search for targets
 target_users_list:
-  - username1
-  - username2
+  - natgeo
+  - nasa
   - username3
 
 # Hashtags to search for targets
 tag_list:
-  - hashtag
-  - taghash
-  - hathsah
+  - instagram
+  - love
+  - hamster
 
 # Optional Stuff: 
 #   This is all currently just the default values and can be omitted
