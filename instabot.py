@@ -158,9 +158,10 @@ class InstaBot:
     def __init__(self, directory=''):
 
         self.max_hour_follows = 10
-        self.max_day_follows = 10*16
-        self.likes_per_user = 3
-        self.explores_per_user = 10
+        self.day_activity_hours = 16
+        self.likes_per_follow = 3
+        self.unfollows_per_follow = 1.1
+        self.explores_per_follow = 10
         self.mean_wait_time = 3
         self.spam_wait_time = 12*60*60
         self.username = ''
@@ -175,7 +176,7 @@ class InstaBot:
         self.load_settings()
 
         self.targets_queue = PriorityQueue(
-            self.max_hour_follows * self.explores_per_user * 12)
+            self.max_hour_follows * self.explores_per_follow * 12)
 
         self.hour_likes = SlidingWindow(self.directory+'/hour_likes')
         self.hour_follows = SlidingWindow(self.directory+'/hour_follows')
@@ -345,24 +346,30 @@ class InstaBot:
 
     def below_like_limit(self):
         # not used; like_deficit used instead
-        below_hour_limit = len(self.hour_likes) < self.max_hour_follows * self.likes_per_user
-        below_day_limit = len(self.day_likes) < self.max_day_follows * self.likes_per_user
+        below_hour_limit = len(self.hour_likes) < self.max_hour_follows * \
+            self.unfollows_per_followself.likes_per_follow
+        below_day_limit = len(self.day_likes) < self.max_hour_follows * \
+            self.day_activity_hours * self.likes_per_follow
         return below_hour_limit and below_day_limit
 
     def below_explore_limit(self):
-        below_hour_limit = len(self.hour_explores) < self.max_hour_follows * self.explores_per_user
-        below_day_limit = len(self.day_explores) < self.max_day_follows * self.explores_per_user
+        below_hour_limit = len(self.hour_explores) < self.max_hour_follows * \
+            self.unfollows_per_followself.explores_per_follow
+        below_day_limit = len(self.day_explores) < self.max_hour_follows * \
+            self.day_activity_hours * self.explores_per_follow
         return below_hour_limit and below_day_limit
 
     def below_follow_limit(self):
         below_hour_limit = len(self.hour_follows) < self.max_hour_follows
-        below_day_limit = len(self.day_follows) < self.max_day_follows
+        below_day_limit = len(self.day_follows) < self.max_hour_follows * self.day_activity_hours
         return len(self.hour_follows) < self.max_hour_follows
         return below_hour_limit and below_day_limit
 
     def below_unfollow_limit(self):
-        below_hour_limit = len(self.hour_unfollows) < self.max_hour_follows*1.1
-        below_day_limit = len(self.day_unfollows) < self.max_day_follows*1.1
+        below_hour_limit = len(self.hour_unfollows) < self.max_hour_follows * \
+            self.unfollows_per_follow
+        below_day_limit = len(self.day_unfollows) < self.max_hour_follows * \
+            self.day_activity_hours * self.unfollows_per_follow
         return below_hour_limit and below_day_limit
 
     # # # # # # # # # #
@@ -572,11 +579,11 @@ class InstaBot:
                     return
 
                 # like
-                self.like_deficit += self.likes_per_user
+                self.like_deficit += self.likes_per_follow
                 if self.like_deficit > 0:
                     for i, item in enumerate(items['items']):
                         if self.like_deficit == 0: 
-                        # if len(self.hour_likes) >= self.likes_per_user * (len(self.hour_follows)+1):
+                        # if len(self.hour_likes) >= self.likes_per_follow * (len(self.hour_follows)+1):
                             break
 
                         media_id = item['pk']

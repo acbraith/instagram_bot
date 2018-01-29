@@ -1,27 +1,36 @@
-# max_hour_follows follows per hour (sliding window)
-# likes_per_user media likes for each targetted user
-# explores_per_user potential targets examined per actual target
-#     careful going too fast; IG can block you for a while
-# wait on average mean_wait_time seconds between API queries
-# wait spam_wait_time when instagram detects spammy behaviour
-# concurrently follow up to max_followed users
-#     unfollow oldest followed users to maintain this number
-# weight of old data decays with data_half_life (in days)
-username:           example
-password:           password
-max_hour_follows:   10
-max_day_follows:    160
-likes_per_user:     3
-explores_per_user:  10
-mean_wait_time:     1
-spam_wait_time:     43200
-max_followed:       100
-data_half_life:     7
+# Login Details
+username:             example  
+password:             password
+
+# User follower lists to search for targets
 target_users_list:
   - username1
   - username2
   - username3
+
+# Hashtags to search for targets
 tag_list:
   - hashtag
   - taghash
   - hathsah
+
+# Optional Stuff: 
+#   This is all currently just the default values and can be omitted
+
+# Limit details
+max_hour_follows:     10
+day_activity_hours:   16
+likes_per_follow:     3
+unfollows_per_follow: 1.1
+explores_per_follow:  10
+
+# Max users the bot will concurrently follow
+max_followed:         100
+
+# Sleep times per request and on spam detection (again optional)
+mean_wait_time:       1
+spam_wait_time:       43200
+
+# Decay rate of day; eg data halves in 'importance' every 7 days here
+data_half_life:       7
+
