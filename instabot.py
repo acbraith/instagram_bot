@@ -157,20 +157,24 @@ class PriorityQueue:
 class InstaBot:
     def __init__(self, directory=''):
 
+        self.username = ''
+        self.password = ''
+
+        self.tag_list = ['instagram']
+        self.target_user_list = []
+
         self.max_hour_follows = 10
         self.day_activity_hours = 16
         self.likes_per_follow = 3
         self.unfollows_per_follow = 2
         self.explores_per_follow = 10
+
+        self.max_followed = 100
+
         self.mean_wait_time = 3
         self.spam_wait_time = 12*60*60
-        self.username = ''
-        self.password = ''
-        self.max_followed = 100
+        
         self.data_half_life = 7
-
-        self.tag_list = ['instagram']
-        self.target_user_list = []
 
         self.directory = directory
         self.load_settings()
@@ -178,22 +182,22 @@ class InstaBot:
         self.targets_queue = PriorityQueue(
             self.max_hour_follows * self.explores_per_follow * 12)
 
-        self.hour_likes = SlidingWindow(self.directory+'/hour_likes')
-        self.hour_follows = SlidingWindow(self.directory+'/hour_follows')
-        self.hour_unfollows = SlidingWindow(self.directory+'/hour_unfollows')
-        self.hour_explores = SlidingWindow(self.directory+'/hour_explores')
-        self.day_likes = SlidingWindow(self.directory+'/day_likes',
-            length=3600*24, check_time=3600)
-        self.day_follows = SlidingWindow(self.directory+'/day_follows',
-            length=3600*24, check_time=3600)
-        self.day_unfollows = SlidingWindow(self.directory+'/day_unfollows',
-            length=3600*24, check_time=3600)
-        self.day_explores = SlidingWindow(self.directory+'/day_explores',
-            length=3600*24, check_time=3600)
+        self.hour_likes = SlidingWindow(self.directory+'/data/hour_likes')
+        self.hour_follows = SlidingWindow(self.directory+'/data/hour_follows')
+        self.hour_unfollows = SlidingWindow(self.directory+'/data/hour_unfollows')
+        self.hour_explores = SlidingWindow(self.directory+'/data/hour_explores')
+        self.day_likes = SlidingWindow(self.directory+'/data/day_likes',
+                                       length=3600*24, check_time=3600)
+        self.day_follows = SlidingWindow(self.directory+'/data/day_follows',
+                                         length=3600*24, check_time=3600)
+        self.day_unfollows = SlidingWindow(self.directory+'/data/day_unfollows',
+                                           length=3600*24, check_time=3600)
+        self.day_explores = SlidingWindow(self.directory+'/data/day_explores',
+                                          length=3600*24, check_time=3600)
 
-        self.target_data_path = self.directory+'/target_data/data.pkl'
-        if not os.path.exists(self.directory+'/target_data'):
-            os.makedirs(self.directory+'/target_data')
+        self.target_data_path = self.directory+'/data/target_data/data.pkl'
+        if not os.path.exists(self.directory+'/data/target_data'):
+            os.makedirs(self.directory+'/data/target_data')
         try:
             self.target_data = pickle.load(open(self.target_data_path, 'rb'))
         except Exception as e:
@@ -202,9 +206,9 @@ class InstaBot:
                          'followers', 'followings', 'follow_back',
                          'tag', 'likes'])
 
-        self.hist_data_path = self.directory+'/hist_data/data.csv'
-        if not os.path.exists(self.directory+'/hist_data'):
-            os.makedirs(self.directory+'/hist_data')
+        self.hist_data_path = self.directory+'/data/hist_data/data.csv'
+        if not os.path.exists(self.directory+'/data/hist_data'):
+            os.makedirs(self.directory+'/data/hist_data')
         try:
             self.hist_data = pd.read_csv(self.hist_data_path)
         except Exception as e:
@@ -420,7 +424,7 @@ class InstaBot:
             sleep(60*60)
 
     def info_printer(self):
-        followed_queue = SQLiteQueue(self.directory+'/followed_users')
+        followed_queue = SQLiteQueue(self.directory+'/data/followed_users')
         while True:
             follower_count, following_count = self.get_following_follower_counts(self.user_id)
             row = pd.Series([datetime.datetime.now(), follower_count, following_count],
@@ -629,7 +633,7 @@ class InstaBot:
                     if self.followed_by(user_id, default=True):
                         followed_queue.put(user_id)
 
-        followed_queue = SQLiteQueue(self.directory+'/followed_users')
+        followed_queue = SQLiteQueue(self.directory+'/data/followed_users')
         while True:
             LOGGER.info("like_follow_unfollow: target_users")
             target_users()
