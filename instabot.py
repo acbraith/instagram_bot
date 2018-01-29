@@ -173,7 +173,7 @@ class InstaBot:
 
         self.mean_wait_time = 3
         self.spam_wait_time = 12*60*60
-        
+
         self.data_half_life = 7
 
         self.directory = directory
@@ -366,7 +366,6 @@ class InstaBot:
     def below_follow_limit(self):
         below_hour_limit = len(self.hour_follows) < self.max_hour_follows
         below_day_limit = len(self.day_follows) < self.max_hour_follows * self.day_activity_hours
-        return len(self.hour_follows) < self.max_hour_follows
         return below_hour_limit and below_day_limit
 
     def below_unfollow_limit(self):
