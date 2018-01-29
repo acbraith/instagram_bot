@@ -160,7 +160,7 @@ class InstaBot:
         self.max_hour_follows = 10
         self.day_activity_hours = 16
         self.likes_per_follow = 3
-        self.unfollows_per_follow = 1.1
+        self.unfollows_per_follow = 2
         self.explores_per_follow = 10
         self.mean_wait_time = 3
         self.spam_wait_time = 12*60*60
@@ -429,7 +429,8 @@ class InstaBot:
             self.save_hist_data()
 
             print(datetime.datetime.now().strftime('%x %X'))
-            print("  My Info:")
+            print("  User Info:")
+            print("    Username       :", self.username)
             print("    Follower Count :", follower_count)
             print("    Following Count:", following_count)
             print("  InstaBot Activity:")
