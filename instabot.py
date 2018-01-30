@@ -250,7 +250,9 @@ class InstaBot:
         self.api_lock.acquire()
         # make sure we sleep at night
         if self.sleep_time():
-            sleep((24-self.day_activity_hours+1)*60)
+            LOGGER.info("send_request; Bed time")
+            sleep((24-self.day_activity_hours+1)*60*60)
+            LOGGER.info("send_request; Time to wake up!")
         self.wait()
         ret = None
         LOGGER.debug("send_request; Reguest: "+request.__name__)
@@ -720,7 +722,7 @@ if __name__ == '__main__':
     if not os.path.exists(directory+'/log'):
         os.makedirs(directory+'/log')
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-    handler = RotatingFileHandler(directory+'/log/debug.log', mode='a', maxBytes=.1*1024*1024,
+    handler = RotatingFileHandler(directory+'/log/debug.log', mode='a', maxBytes=1*1024*1024,
                                   backupCount=10, encoding=None, delay=0)
     handler.setFormatter(formatter)
     LOGGER.addHandler(handler)
