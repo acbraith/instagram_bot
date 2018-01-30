@@ -17,6 +17,11 @@ tag_list:
 #   Here are the default values and can be omitted (or changed)
 #   Careful with raising the limits
 
+# On/Off switches
+like:                 True
+follow:               True
+unfollow:             True
+
 # Limit details
 max_hour_follows:     10
 day_activity_hours:   16

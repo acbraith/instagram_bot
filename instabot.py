@@ -163,6 +163,10 @@ class InstaBot:
         self.tag_list = ['instagram']
         self.target_user_list = []
 
+        self.like = True
+        self.follow = True
+        self.unfollow = True
+
         self.max_hour_follows = 10
         self.day_activity_hours = 16
         self.likes_per_follow = 3
@@ -289,15 +293,18 @@ class InstaBot:
     def like_media(self, media_id):
         self.hour_likes.put(media_id)
         self.day_likes.put(media_id)
+        if not(self.like): return
         self.send_request(self.api.like, media_id)
     def follow_user(self, user_id, followed_queue):
         self.hour_follows.put(user_id)
         self.day_follows.put(user_id)
         followed_queue.put(user_id)
+        if not(self.follow): return
         self.send_request(self.api.follow, user_id)
     def unfollow_user(self, user_id, followed_queue):
         self.hour_unfollows.put(user_id)
         self.day_unfollows.put(user_id)
+        if not(self.unfollow): return
         ret = self.send_request(self.api.unfollow, user_id)
         if ret is None:
             LOGGER.info("unfollow_users: unfollow fail")
@@ -472,14 +479,20 @@ class InstaBot:
             print("  InstaBot Activity:")
             print("    Followed Users :", len(followed_queue))
             print("    1 hour activity:")
-            print("      Likes        :", len(self.hour_likes))
-            print("      Follows      :", len(self.hour_follows))
-            print("      Unfollows    :", len(self.hour_unfollows))
+            if self.like: 
+                print("      Likes        :", len(self.hour_likes))
+            if self.follow: 
+                print("      Follows      :", len(self.hour_follows))
+            if self.unfollow: 
+                print("      Unfollows    :", len(self.hour_unfollows))
             print("      Explores     :", len(self.hour_explores))
             print("    24 hour activity:")
-            print("      Likes        :", len(self.day_likes))
-            print("      Follows      :", len(self.day_follows))
-            print("      Unfollows    :", len(self.day_unfollows))
+            if self.like: 
+                print("      Likes        :", len(self.day_likes))
+            if self.follow: 
+                print("      Follows      :", len(self.day_follows))
+            if self.unfollow: 
+                print("      Unfollows    :", len(self.day_unfollows))
             print("      Explores     :", len(self.day_explores))
             print("    Targets Queue:")
             print("      Total Len:", len(self.targets_queue))
