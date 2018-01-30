@@ -231,8 +231,6 @@ class InstaBot:
 
         user_info = self.send_request(self.api.searchUsername, self.username)
         self.user_id = user_info['user']['pk']
-        self.follower_count = []
-        self.following_count = []
 
 
     def load_settings(self):
@@ -246,6 +244,9 @@ class InstaBot:
 
     def send_request(self, request, *args, **kwargs):
         self.api_lock.acquire()
+        # make sure we sleep at night
+        if self.sleep_time():
+            sleep((24-self.day_activity_hours+1)*60)
         self.wait()
         ret = None
         LOGGER.debug("send_request; Reguest: "+request.__name__)
@@ -284,6 +285,7 @@ class InstaBot:
         ret =  self.send_request(self.api.getUserFeed, user_id)
         if ret is None or ret==404: return None
         return ret
+
     def like_media(self, media_id):
         self.hour_likes.put(media_id)
         self.day_likes.put(media_id)
@@ -301,6 +303,7 @@ class InstaBot:
             LOGGER.info("unfollow_users: unfollow fail")
             if self.followed_by(user_id, default=True):
                 followed_queue.put(user_id)
+
     def get_user_info(self, user_id):
         ret = self.send_request(self.api.getUsernameInfo, user_id)
         if ret is None or ret==404: return None
@@ -379,26 +382,31 @@ class InstaBot:
             self.likes_per_follow
         below_day_limit = len(self.day_likes) < self.max_hour_follows * \
             self.day_activity_hours * self.likes_per_follow
-        return below_hour_limit and below_day_limit
+        return below_hour_limit# and below_day_limit
 
     def below_explore_limit(self):
         below_hour_limit = len(self.hour_explores) < self.max_hour_follows * \
             self.explores_per_follow
         below_day_limit = len(self.day_explores) < self.max_hour_follows * \
             self.day_activity_hours * self.explores_per_follow
-        return below_hour_limit and below_day_limit
+        return below_hour_limit# and below_day_limit
 
     def below_follow_limit(self):
         below_hour_limit = len(self.hour_follows) < self.max_hour_follows
         below_day_limit = len(self.day_follows) < self.max_hour_follows * self.day_activity_hours
-        return below_hour_limit and below_day_limit
+        return below_hour_limit# and below_day_limit
+
+    def sleep_time(self):
+        below_day_limit = len(self.day_follows) < self.max_hour_follows * self.day_activity_hours
+        return not(below_day_limit)
+
 
     def below_unfollow_limit(self):
         below_hour_limit = len(self.hour_unfollows) < self.max_hour_follows * \
             self.unfollows_per_follow
         below_day_limit = len(self.day_unfollows) < self.max_hour_follows * \
             self.day_activity_hours * self.unfollows_per_follow
-        return below_hour_limit and below_day_limit
+        return below_hour_limit# and below_day_limit
 
     # # # # # # # # # #
     # Bot Workers
