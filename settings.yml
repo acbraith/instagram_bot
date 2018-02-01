@@ -36,6 +36,10 @@ max_followed:         100
 mean_wait_time:       1
 spam_wait_time:       43200
 
+# Print model details
+#   Logistic regression coefficents and intercept
+display_coefficients: False
+
 # Data weighting rate of decay; time for data to half in 'importance'
 data_half_life:       7
 

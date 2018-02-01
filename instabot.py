@@ -167,6 +167,8 @@ class InstaBot:
         self.follow = True
         self.unfollow = True
 
+        self.display_coefficients = False
+
         self.max_hour_follows = 10
         self.day_activity_hours = 16
         self.likes_per_follow = 3
@@ -193,14 +195,6 @@ class InstaBot:
         self.hour_follows = SlidingWindow(self.directory+'/data/hour_follows')
         self.hour_unfollows = SlidingWindow(self.directory+'/data/hour_unfollows')
         self.hour_explores = SlidingWindow(self.directory+'/data/hour_explores')
-        self.day_likes = SlidingWindow(self.directory+'/data/day_likes',
-                                       length=3600*24, check_time=3600)
-        self.day_follows = SlidingWindow(self.directory+'/data/day_follows',
-                                         length=3600*24, check_time=3600)
-        self.day_unfollows = SlidingWindow(self.directory+'/data/day_unfollows',
-                                           length=3600*24, check_time=3600)
-        self.day_explores = SlidingWindow(self.directory+'/data/day_explores',
-                                          length=3600*24, check_time=3600)
 
         self.target_data_path = self.directory+'/data/target_data/data.pkl'
         if not os.path.exists(self.directory+'/data/target_data'):
@@ -221,7 +215,10 @@ class InstaBot:
         except Exception as e:
             self.hist_data = pd.DataFrame(
                 columns=['timestamp', 'followers', 'followings'])
+
         self.like_deficit = 0 # how many extra likes need to be made up
+
+        self.asleep = False
 
         self.target_data_lock = threading.Lock()
 
@@ -249,10 +246,8 @@ class InstaBot:
     def send_request(self, request, *args, **kwargs):
         self.api_lock.acquire()
         # make sure we sleep at night
-        if self.sleep_time():
-            LOGGER.info("send_request; Bed time")
-            sleep((24-self.day_activity_hours+1)*60*60)
-            LOGGER.info("send_request; Time to wake up!")
+        while self.asleep:
+            sleep(10*60)
         self.wait()
         ret = None
         LOGGER.debug("send_request; Reguest: "+request.__name__)
@@ -294,18 +289,15 @@ class InstaBot:
 
     def like_media(self, media_id):
         self.hour_likes.put(media_id)
-        self.day_likes.put(media_id)
         if not(self.like): return
         self.send_request(self.api.like, media_id)
     def follow_user(self, user_id, followed_queue):
         self.hour_follows.put(user_id)
-        self.day_follows.put(user_id)
         followed_queue.put(user_id)
         if not(self.follow): return
         self.send_request(self.api.follow, user_id)
     def unfollow_user(self, user_id, followed_queue):
         self.hour_unfollows.put(user_id)
-        self.day_unfollows.put(user_id)
         if not(self.unfollow): return
         ret = self.send_request(self.api.unfollow, user_id)
         if ret is None:
@@ -389,37 +381,34 @@ class InstaBot:
         # not used; like_deficit used instead
         below_hour_limit = len(self.hour_likes) < self.max_hour_follows * \
             self.likes_per_follow
-        below_day_limit = len(self.day_likes) < self.max_hour_follows * \
-            self.day_activity_hours * self.likes_per_follow
-        return below_hour_limit# and below_day_limit
+        return below_hour_limit
 
     def below_explore_limit(self):
         below_hour_limit = len(self.hour_explores) < self.max_hour_follows * \
             self.explores_per_follow
-        below_day_limit = len(self.day_explores) < self.max_hour_follows * \
-            self.day_activity_hours * self.explores_per_follow
-        return below_hour_limit# and below_day_limit
+        return below_hour_limit
 
     def below_follow_limit(self):
         below_hour_limit = len(self.hour_follows) < self.max_hour_follows
-        below_day_limit = len(self.day_follows) < self.max_hour_follows * self.day_activity_hours
-        return below_hour_limit# and below_day_limit
-
-    def sleep_time(self):
-        below_day_limit = len(self.day_follows) < self.max_hour_follows * self.day_activity_hours
-        return not(below_day_limit)
-
+        return below_hour_limit
 
     def below_unfollow_limit(self):
         below_hour_limit = len(self.hour_unfollows) < self.max_hour_follows * \
             self.unfollows_per_follow
-        below_day_limit = len(self.day_unfollows) < self.max_hour_follows * \
-            self.day_activity_hours * self.unfollows_per_follow
-        return below_hour_limit# and below_day_limit
+        return below_hour_limit
 
     # # # # # # # # # #
     # Bot Workers
     # # # # # # # # # #
+    def sleep_timer(self):
+        while True:
+            awake_time = self.day_activity_hours + np.random.uniform(-1, 1)
+            sleep(awake_time*60*60)
+            self.asleep = True
+            asleep_time = (24-self.day_activity_hours) + np.random.uniform(-1, 1)
+            sleep(asleep_time*60*60)
+            self.asleep = False
+
     def model_fitter(self):
 
         def update_follow_backs():
@@ -488,14 +477,6 @@ class InstaBot:
             if self.unfollow: 
                 print("      Unfollows    :", len(self.hour_unfollows))
             print("      Explores     :", len(self.hour_explores))
-            print("    24 hour activity:")
-            if self.like: 
-                print("      Likes        :", len(self.day_likes))
-            if self.follow: 
-                print("      Follows      :", len(self.day_follows))
-            if self.unfollow: 
-                print("      Unfollows    :", len(self.day_unfollows))
-            print("      Explores     :", len(self.day_explores))
             print("    Targets Queue:")
             print("      Total Len:", len(self.targets_queue))
             try:
@@ -506,7 +487,7 @@ class InstaBot:
             except Exception:
                 pass
             try:
-                if False:
+                if self.display_coefficients:
                     print("  Model Coefficients:")
                     print("    Intercept Odds Ratio:",
                           '{0:.2e}'.format(np.exp(self.model.intercept_[0])))
@@ -516,7 +497,7 @@ class InstaBot:
                         print("      "+tag.rjust(len(max(l, key=len)))+": 1"+\
                               '{0:+.1e}'.format(np.exp(coef)-1))
             except Exception as e:
-                print(e)
+                pass
             print("    Thread Alive:")
             print("      fit_model           :", self.fit_model_thread.is_alive())
             print("      find_targets        :", self.find_targets_thread.is_alive())
@@ -614,7 +595,6 @@ class InstaBot:
 
                             self.targets_queue.put(user_info, followback_confidence)
                             self.hour_explores.put(user_id)
-                            self.day_explores.put(user_id)
                 except Exception as e:
                     LOGGER.error("find_targets; Exception: "+str(e))
             LOGGER.info("find_targets: sleep")
@@ -687,6 +667,11 @@ class InstaBot:
 
         if not(self.logged_in):
             raise Exception("Not logged in to Instagram")
+
+        # sleep signal thread
+        self.sleep_time_thread = threading.Thread(
+            target=self.sleep_timer)
+        self.sleep_time_thread.start()
 
         # model data gathering and fitting
         self.fit_model_thread = threading.Thread(
