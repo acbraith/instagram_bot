@@ -493,7 +493,7 @@ class InstaBot:
                           '{0:.2e}'.format(np.exp(self.model.intercept_[0])))
                     print("    Coefficient Odds Ratios:")
                     l = ['followers', 'followings'] + self.tag_list + self.target_user_list
-                    for tag, coef in zip(l, self.model.coef_[0][2:]):
+                    for tag, coef in sorted(zip(l, self.model.coef_[0][2:]), key=lambda x: x[1]):
                         print("      "+tag.rjust(len(max(l, key=len)))+": 1"+\
                               '{0:+.1e}'.format(np.exp(coef)-1))
             except Exception as e:
