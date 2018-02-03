@@ -302,7 +302,7 @@ class InstaBot:
         ret = self.send_request(self.api.unfollow, user_id)
         if ret is None:
             LOGGER.info("unfollow_users: unfollow fail")
-            if self.followed_by(user_id, default=True):
+            if self.followed_by(user_id) != False:
                 followed_queue.put(user_id)
 
     def get_user_info(self, user_id):
@@ -313,14 +313,10 @@ class InstaBot:
         ret = self.send_request(self.api.userFriendship, user_id)
         if ret is None or ret==404: return None
         return ret
-    def followed_by(self, user_id, default=False):
+    def followed_by(self, user_id):
         ret = self.get_friendship_info(user_id)
-        if ret == 404:
-            return False
-        try:
-            return ret['followed_by']
-        except:
-            return default
+        if ret is None or ret==404: return None
+        return ret['followed_by']
 
     def get_followed_queue(self):
         while True:
@@ -374,26 +370,26 @@ class InstaBot:
     def get_following_follower_counts(self, user_id):
         user_info = self.get_user_info(user_id)
         if user_info is None:
-            return (-1, -1)
+            return (None, None)
         return (user_info['follower_count'], user_info['following_count'])
 
     def below_like_limit(self):
         # not used; like_deficit used instead
-        below_hour_limit = len(self.hour_likes) < self.max_hour_follows * \
+        below_hour_limit = len(self.hour_likes) <= self.max_hour_follows * \
             self.likes_per_follow
         return below_hour_limit
 
     def below_explore_limit(self):
-        below_hour_limit = len(self.hour_explores) < self.max_hour_follows * \
+        below_hour_limit = len(self.hour_explores) <= self.max_hour_follows * \
             self.explores_per_follow
         return below_hour_limit
 
     def below_follow_limit(self):
-        below_hour_limit = len(self.hour_follows) < self.max_hour_follows
+        below_hour_limit = len(self.hour_follows) <= self.max_hour_follows
         return below_hour_limit
 
     def below_unfollow_limit(self):
-        below_hour_limit = len(self.hour_unfollows) < self.max_hour_follows * \
+        below_hour_limit = len(self.hour_unfollows) <= self.max_hour_follows * \
             self.unfollows_per_follow
         return below_hour_limit
 
@@ -404,9 +400,12 @@ class InstaBot:
         while True:
             awake_time = self.day_activity_hours + np.random.uniform(-1, 1)
             sleep(awake_time*60*60)
+            print("Going to sleep")
+            print("Waking up at", datetime.datetime.now() + datetime.timedelta(seconds=awake_time))
             self.asleep = True
             asleep_time = (24-self.day_activity_hours) + np.random.uniform(-1, 1)
             sleep(asleep_time*60*60)
+            print("Waking up")
             self.asleep = False
 
     def model_fitter(self):
@@ -419,7 +418,8 @@ class InstaBot:
             for index, row in to_update.iterrows():
                 user_id = row['user_id']
                 follow_back = self.followed_by(user_id)
-                self.target_data.loc[index, 'follow_back'] = follow_back
+                if follow_back is not None:
+                    self.target_data.loc[index, 'follow_back'] = follow_back
 
         def update_model():
 
@@ -454,13 +454,15 @@ class InstaBot:
             sleep(60*60)
 
     def info_printer(self):
+        sleep(30)
         followed_queue = self.get_followed_queue()
         while True:
             follower_count, following_count = self.get_following_follower_counts(self.user_id)
-            row = pd.Series([datetime.datetime.now(), follower_count, following_count],
-                            index=self.hist_data.columns)
-            self.hist_data = self.hist_data.append(row, ignore_index=True)
-            self.save_hist_data()
+            if follower_count is not None:
+                row = pd.Series([datetime.datetime.now(), follower_count, following_count],
+                                index=self.hist_data.columns)
+                self.hist_data = self.hist_data.append(row, ignore_index=True)
+                self.save_hist_data()
 
             print(datetime.datetime.now().strftime('%x %X'))
             print("  User Info:")
@@ -488,14 +490,37 @@ class InstaBot:
                 pass
             try:
                 if self.display_coefficients:
+
+                    max_user_len = len(max(self.target_user_list, key=len))
+                    max_tag_len = len(max(self.tag_list, key=len)) + 1
+                    max_len = max(max_user_len, max_tag_len)
+
                     print("  Model Coefficients:")
-                    print("    Intercept Odds Ratio:",
-                          '{0:.2e}'.format(np.exp(self.model.intercept_[0])))
-                    print("    Coefficient Odds Ratios:")
-                    l = ['followers', 'followings'] + self.tag_list + self.target_user_list
-                    for tag, coef in sorted(zip(l, self.model.coef_[0][2:]), key=lambda x: x[1]):
-                        print("      "+tag.rjust(len(max(l, key=len)))+": 1"+\
-                              '{0:+.1e}'.format(np.exp(coef)-1))
+                    print("    Base followback odds:\n      " + \
+                        "".rjust(max_len) + "  " + \
+                        "1:" + '{0:.1f}'.format(1/np.exp(self.model.intercept_[0])))
+                    print("    log(followers) odds multiplier:\n      " + \
+                        "".rjust(max_len) + "  " + \
+                          '{0:.3f}'.format(1/np.exp(self.model.coef_[0][0])))
+                    print("    log(followings) odds multiplier:\n      " + \
+                        "".rjust(max_len) + "  " + \
+                          '{0:.3f}'.format(1/np.exp(self.model.coef_[0][1])))
+
+                    print("    Hashtag odds multipliers:")
+                    tag_coefs = zip(
+                        self.tag_list, 
+                        self.model.coef_[0][2:])
+                    for tag,coef in sorted(tag_coefs, key=lambda x: x[1]):
+                        print("      " +("#" + tag).rjust(max_len) + ": " + \
+                            '{0:.3f}'.format(np.exp(coef)))
+
+                    print("    Target User odds multipliers:")
+                    user_coefs = zip(
+                        self.target_user_list, 
+                        self.model.coef_[0][len(self.tag_list)+2:])
+                    for user,coef in sorted(user_coefs, key=lambda x: x[1]):
+                        print("      " + user.rjust(max_len) + ": " + \
+                            '{0:.3f}'.format(np.exp(coef)))
             except Exception as e:
                 pass
             print("    Thread Alive:")
@@ -573,28 +598,28 @@ class InstaBot:
                             LOGGER.info("find_targets: get_following_follower_counts")
                             user_followers, user_followings = \
                                 self.get_following_follower_counts(user_id)
+                            if user_followers is not None:
+                                user_info = {
+                                    'user_id':user_id,
+                                    'followers':user_followers,
+                                    'followings':user_followings,
+                                    'likes':0,
+                                    'tag':tag,
+                                    'discovery_time':datetime.datetime.now()}
 
-                            user_info = {
-                                'user_id':user_id,
-                                'followers':user_followers,
-                                'followings':user_followings,
-                                'likes':0,
-                                'tag':tag,
-                                'discovery_time':datetime.datetime.now()}
+                                LOGGER.info("find_targets: get_followback_confidence")
+                                followback_confidence = get_followback_confidence(user_info)
 
-                            LOGGER.info("find_targets: get_followback_confidence")
-                            followback_confidence = get_followback_confidence(user_info)
+                                # pseudo epsilon greedy strategy
+                                # aim for every 1/10 targets being random
+                                # explore ~20 targets for every 1 real target
+                                epsilon = 0.1/20
+                                if np.random.rand() < epsilon:
+                                    LOGGER.info("find_targets: mark target for exploration")
+                                    followback_confidence = 1
 
-                            # pseudo epsilon greedy strategy
-                            # aim for every 1/10 targets being random
-                            # explore ~20 targets for every 1 real target
-                            epsilon = 0.1/20
-                            if np.random.rand() < epsilon:
-                                LOGGER.info("find_targets: mark target for exploration")
-                                followback_confidence = 1
-
-                            self.targets_queue.put(user_info, followback_confidence)
-                            self.hour_explores.put(user_id)
+                                self.targets_queue.put(user_info, followback_confidence)
+                                self.hour_explores.put(user_id)
                 except Exception as e:
                     LOGGER.error("find_targets; Exception: "+str(e))
             LOGGER.info("find_targets: sleep")
@@ -631,7 +656,7 @@ class InstaBot:
                     self.follow_user(user_id, followed_queue)
             # end target_user
 
-            while self.below_follow_limit():
+            while self.below_follow_limit() and self.below_like_limit():
                 user_info = self.targets_queue.get()
                 if user_info is not None:
                     user_id = user_info['user_id']
