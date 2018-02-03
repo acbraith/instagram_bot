@@ -3,7 +3,7 @@ username:             myusername
 password:             mypassword
 
 # User follower lists to search for targets
-target_users_list:
+target_user_list:
   - natgeo
   - nasa
 
