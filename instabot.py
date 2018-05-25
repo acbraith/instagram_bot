@@ -233,6 +233,9 @@ class InstaBot:
         user_info = self.send_request(self.api.searchUsername, self.username)
         self.user_id = user_info['user']['pk']
 
+        self.bad_tags = []
+        self.bad_target_users = []
+
 
     def load_settings(self):
         settings = yaml.load(open(self.settings_directory+'/settings.yml', 'r'))
@@ -250,9 +253,7 @@ class InstaBot:
             sleep(10*60)
         self.wait()
         ret = None
-        LOGGER.debug("send_request; Reguest: "+request.__name__)
-        LOGGER.debug("send_request; args: "+str(args))
-        LOGGER.debug("send_request; kwargs: "+str(kwargs))
+        LOGGER.debug("send_request; Reguest="+request.__name__ + "| args="+str(args) + " | kwargs="+str(kwargs))
         try:
             response = request(*args, **kwargs)
             if response.status_code == 200:
@@ -268,6 +269,10 @@ class InstaBot:
                     try:
                         if json.loads(response.text)['spam']:
                             LOGGER.warning("send_request; Spam Detected")
+                            print("Spam Detected")
+                            print("Waking up at", 
+                                datetime.datetime.now() + 
+                                datetime.timedelta(seconds=self.spam_wait_time))
                             sleep(self.spam_wait_time)
                     except:
                         LOGGER.warning("send_request; Possible Rate Limiting Detected")
@@ -398,13 +403,14 @@ class InstaBot:
     # # # # # # # # # #
     def sleep_timer(self):
         while True:
-            awake_time = self.day_activity_hours + np.random.uniform(-1, 1)
-            sleep(awake_time*60*60)
+            awake_hours = self.day_activity_hours + np.random.uniform(-1, 1)
+            sleep(awake_hours*60*60)
             print("Going to sleep")
-            print("Waking up at", datetime.datetime.now() + datetime.timedelta(seconds=awake_time))
             self.asleep = True
-            asleep_time = (24-self.day_activity_hours) + np.random.uniform(-1, 1)
-            sleep(asleep_time*60*60)
+            sleep_hours = (24-self.day_activity_hours) + np.random.uniform(-1, 1)
+            print("Waking up at", 
+                datetime.datetime.now() + datetime.timedelta(seconds=sleep_hours*60*60))
+            sleep(sleep_hours*60*60)
             print("Waking up")
             self.asleep = False
 
@@ -444,6 +450,19 @@ class InstaBot:
                 self.model = m
 
         while True:
+            LOGGER.info("fit_model: refresh settings")
+            print("Refreshing settings")
+            self.load_settings()
+            LOGGER.info("fit_model: clear bad tags/target_users")
+            try:
+            	self.tag_list = [t for t in self.tag_list if t not in self.bad_tags]
+            except:
+            	self.tag_list = []
+            try:
+            	self.target_user_list = [t for t in self.target_user_list if t not in self.bad_tags]
+            except:
+            	self.target_user_list = []
+
             LOGGER.info("fit_model: update_model")
             update_model()
             LOGGER.info("fit_model: update_follow_backs")
@@ -527,16 +546,21 @@ class InstaBot:
             print("      fit_model           :", self.fit_model_thread.is_alive())
             print("      find_targets        :", self.find_targets_thread.is_alive())
             print("      like_follow_unfollow:", self.like_follow_unfollow_thread.is_alive())
-            print("  Refreshing settings")
-            self.load_settings()
             sleep(15*60)
 
     def target_finder(self):
 
-        def select_tag():
+        def select_tag(explore):
+            if hasattr(self.model, 'coef_') and not explore:
+                weights = np.exp(self.model.coef_[0][2:2+len(self.tag_list)])
+                return np.random.choice(self.tag_list, p=weights/np.sum(weights))
             return random.choice(self.tag_list)
-        def select_target_username():
-            return random.choice(target_user_iterators)
+
+        def select_target_username(explore):
+            if hasattr(self.model, 'coef_') and not explore:
+                weights = np.exp(self.model.coef_[0][2+len(self.tag_list):-1])
+                return np.random.choice(self.target_user_list, p=weights/np.sum(weights))
+            return random.choice(self.target_user_list)
 
         def get_followback_confidence(user_info):
             x = [user_info['followers'], user_info['followings']]
@@ -551,75 +575,93 @@ class InstaBot:
                 followback_confidence = 1
             return followback_confidence
 
-        # create iterators for each target user
-        target_user_iterators = []
+        # gather target user info
+        target_user_infos = {}
         try:
             for username in self.target_user_list:
-                LOGGER.info("find_targets: create_user_iterator")
+                LOGGER.info("find_targets: populate target user info for " + username)
                 try:
-                    user_info = self.send_request(self.api.searchUsername, username)
-                    user_id = user_info['user']['pk']
-                    follower_list = self.send_request(self.api.getUserFollowers, user_id)
-                    user_ids = [user['pk'] for user in follower_list['users']]
-                    iterator = iter(user_ids)
-                    target_user_iterators += [(iterator, username)]
+                    target_user_infos[username] = self.send_request(self.api.searchUsername, username)
                 except Exception as e:
-                    LOGGER.error("find_targets, create_user_iterator; Exception: "+str(e))
+                    LOGGER.error("find_targets, create_user_iterator, username=" + username + "; Exception: "+str(e))
         except Exception as e:
             LOGGER.error("find_targets, create_user_iterators; Exception: "+str(e))
 
+        # remember iterator for each tag
+        tag_iterators = {}
         # build up self.targets_queue
         while True:
             while self.below_explore_limit():
                 try:
+                    # pseudo epsilon greedy strategy
+                    # aim for every 1/10 targets being random
+                    explore = False
+                    epsilon = 0.1 / self.explores_per_follow
+                    if np.random.rand() < epsilon:
+                        LOGGER.info("find_targets: mark target for exploration")
+                        explore = True
+
                     # select target_user_list or tag_list
-                    # TODO use model to intelligently choose where to explore
-                    if len(target_user_iterators) == 0 or np.random.rand() < 0.5:
+                    if len(self.target_user_list) == 0 or np.random.rand() < 0.5:
                         # get user_ids from tag feed
-                        LOGGER.info("find_targets: select_tag")
-                        tag = select_tag()
-                        items = self.get_tag_feed(tag)
-                        user_ids = [item['user']['pk'] for item in items['items']]
+                        tag = select_tag(explore)
+
+                        if tag not in tag_iterators:
+                            tag_iterators[tag] = []
+                        if len(tag_iterators[tag]) == 0:
+                            try:
+                                LOGGER.info("find_targets: refresh list for " + tag)
+                                items = self.get_tag_feed(tag)
+                                tag_iterators[tag] = [item['user']['pk'] for item in items['items']]
+                                if len(tag_iterators[tag]) == 0:
+                                    raise Exception()
+                            except Exception as e:
+                                self.bad_tags += [tag]
+                                raise Exception("find_targets: bad tag " + tag)
                     else:
                         # get user_ids from target user followers
-                        LOGGER.info("find_targets: select_target_username")
-                        idx = np.random.randint(0, len(target_user_iterators))
-                        user_ids, tag = target_user_iterators[idx]
-                        # tag here refers to user_id who's followers we are targetting
-                        if not any(tag):
-                            del target_user_iterators[idx]
-                            raise Exception("find_targets: user_ids iterator empty")
+                        tag = select_target_username(explore)
 
-                    # iterate over user_ids
-                    for i, user_id in enumerate(user_ids):
-                        if i >= 5: break
-                        LOGGER.info("find_targets: valid_target")
-                        if self.valid_target(user_id):
-                            LOGGER.info("find_targets: get_following_follower_counts")
-                            user_followers, user_followings = \
-                                self.get_following_follower_counts(user_id)
-                            if user_followers is not None:
-                                user_info = {
-                                    'user_id':user_id,
-                                    'followers':user_followers,
-                                    'followings':user_followings,
-                                    'likes':0,
-                                    'tag':tag,
-                                    'discovery_time':datetime.datetime.now()}
+                        if tag not in tag_iterators:
+                            tag_iterators[tag] = []
+                        if len(tag_iterators[tag]) == 0:
+                            try:
+                                LOGGER.info("find_targets: refresh list for " + tag)
+                                user_id = target_user_infos[tag]['user']['pk']
+                                follower_list = self.send_request(self.api.getUserFollowers, user_id)
+                                tag_iterators[tag] = [user['pk'] for user in follower_list['users']]
+                                if len(tag_iterators[tag]) == 0:
+                                    raise Exception()
+                            except Exception as e:
+                                self.bad_tags += [tag]
+                                raise Exception("find_targets: bad target_user " + tag)
 
-                                LOGGER.info("find_targets: get_followback_confidence")
+                    LOGGER.info("find_targets: selected tag=" + tag + " (" + ("hashtag)" if tag in self.tag_list else "user)"))
+
+                    # explore first id from list
+                    user_id = tag_iterators[tag].pop(0)
+
+                    if self.valid_target(user_id):
+                        user_followers, user_followings = \
+                            self.get_following_follower_counts(user_id)
+                        if user_followers is not None:
+                            user_info = {
+                                'user_id':user_id,
+                                'followers':user_followers,
+                                'followings':user_followings,
+                                'likes':0,
+                                'tag':tag,
+                                'discovery_time':datetime.datetime.now()}
+
+                            if explore:
+                                followback_confidence = 1
+                            else:
                                 followback_confidence = get_followback_confidence(user_info)
 
-                                # pseudo epsilon greedy strategy
-                                # aim for every 1/10 targets being random
-                                # explore ~20 targets for every 1 real target
-                                epsilon = 0.1/20
-                                if np.random.rand() < epsilon:
-                                    LOGGER.info("find_targets: mark target for exploration")
-                                    followback_confidence = 1
 
-                                self.targets_queue.put(user_info, followback_confidence)
-                                self.hour_explores.put(user_id)
+                            LOGGER.info("find_targets: enque target for " + tag + " (confidence=" + str(followback_confidence) + ")")
+                            self.targets_queue.put(user_info, followback_confidence)
+                            self.hour_explores.put(user_id)
                 except Exception as e:
                     LOGGER.error("find_targets; Exception: "+str(e))
             LOGGER.info("find_targets: sleep")
@@ -660,10 +702,9 @@ class InstaBot:
                 user_info = self.targets_queue.get()
                 if user_info is not None:
                     user_id = user_info['user_id']
-                    LOGGER.info("like_follow_unfollow: target_users: valid_target")
                     if self.valid_target(user_id):
 
-                        LOGGER.info("like_follow_unfollow: target_users: target_user")
+                        LOGGER.info("like_follow_unfollow: target_users: target_user " + str(user_id))
                         target_user(user_info['user_id'])
 
                         if user_info['followers'] != -1 and \
@@ -737,7 +778,7 @@ if __name__ == '__main__':
     handler.setFormatter(formatter)
     LOGGER.addHandler(handler)
     logging.getLogger('requests').addHandler(handler)
-    LOGGER.setLevel(logging.DEBUG)
+    LOGGER.setLevel(logging.INFO)
     logging.getLogger('requests').setLevel(logging.WARNING)
 
     # run bot
