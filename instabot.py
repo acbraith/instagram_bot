@@ -117,6 +117,9 @@ class SlidingWindow:
         if len(self.items) != l:
             self._save()
         self.lock.release()
+    def __contains__(self, item):
+        self._clean()
+        return item in self.items
     def __len__(self):
         self._clean()
         return len(self.items)
@@ -195,6 +198,12 @@ class InstaBot:
         self.hour_follows = SlidingWindow(self.directory+'/data/hour_follows')
         self.hour_unfollows = SlidingWindow(self.directory+'/data/hour_unfollows')
         self.hour_explores = SlidingWindow(self.directory+'/data/hour_explores')
+        # Users targetted in the past week
+        self.week_targets = SlidingWindow(
+            self.directory+'/data/week_targets',
+            length = 60*60*24*7,
+            check_time = 60*60
+        )
 
         self.target_data_path = self.directory+'/data/target_data/data.pkl'
         if not os.path.exists(self.directory+'/data/target_data'):
@@ -361,6 +370,10 @@ class InstaBot:
         return one_hot_tags
 
     def valid_target(self, user_id):
+        
+        if user_id in self.week_targets:
+            return False
+
         friendship_info = self.get_friendship_info(user_id)
         try:
             return not(friendship_info['blocking'] or \
@@ -703,6 +716,8 @@ class InstaBot:
                 if user_info is not None:
                     user_id = user_info['user_id']
                     if self.valid_target(user_id):
+
+                        self.week_targets.put(user_id)
 
                         LOGGER.info("like_follow_unfollow: target_users: target_user " + str(user_id))
                         target_user(user_info['user_id'])
